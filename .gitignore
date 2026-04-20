@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Backend runtime artifacts
+news_aggregator_session.session*
+backend/news_aggregator_session.session*
+backend/data/news_aggregator_session.session*
+backend/data/twitter_cookies.json
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# OS
+.DS_Store
+Thumbs.db

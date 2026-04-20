@@ -1,0 +1,116 @@
+from __future__ import annotations
+
+from fastapi import APIRouter, HTTPException
+
+from database import get_pool
+from models import TopicCreate, TopicItem, TopicUpdate
+
+
+router = APIRouter(prefix="/topics", tags=["topics"])
+
+
+def _clean_keywords(keywords: list[str]) -> list[str]:
+    cleaned = [item.strip() for item in keywords if item and item.strip()]
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="At least one keyword is required")
+    return cleaned
+
+
+@router.get("", response_model=list[TopicItem])
+async def list_topics() -> list[dict]:
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, topic_name, keywords, alert_urgency_threshold,
+                   active, created_at, updated_at
+            FROM topics
+            ORDER BY created_at DESC
+            """
+        )
+    return [dict(row) for row in rows]
+
+
+@router.post("", response_model=TopicItem)
+async def create_topic(payload: TopicCreate) -> dict:
+    keywords = _clean_keywords(payload.keywords)
+
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO topics(topic_name, keywords, alert_urgency_threshold, active)
+            VALUES($1, $2, $3, $4)
+            """,
+            payload.topic_name.strip(),
+            keywords,
+            payload.alert_urgency_threshold,
+            payload.active,
+        )
+
+        topic_id = await conn.fetchval("SELECT LAST_INSERT_ID()")
+        row = await conn.fetchrow(
+            """
+            SELECT id, topic_name, keywords, alert_urgency_threshold,
+                   active, created_at, updated_at
+            FROM topics
+            WHERE id = $1
+            """,
+            topic_id,
+        )
+
+    return dict(row)
+
+
+@router.put("/{topic_id}", response_model=TopicItem)
+async def update_topic(topic_id: int, payload: TopicUpdate) -> dict:
+    keywords = None
+    if payload.keywords is not None:
+        keywords = _clean_keywords(payload.keywords)
+
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        existing = await conn.fetchval("SELECT id FROM topics WHERE id = $1", topic_id)
+        if not existing:
+            raise HTTPException(status_code=404, detail="Topic not found")
+
+        await conn.execute(
+            """
+            UPDATE topics
+            SET topic_name = COALESCE($1, topic_name),
+                keywords = COALESCE($2, keywords),
+                alert_urgency_threshold = COALESCE($3, alert_urgency_threshold),
+                active = COALESCE($4, active),
+                updated_at = NOW()
+            WHERE id = $5
+            """,
+            payload.topic_name.strip() if payload.topic_name else None,
+            keywords,
+            payload.alert_urgency_threshold,
+            payload.active,
+            topic_id,
+        )
+
+        row = await conn.fetchrow(
+            """
+            SELECT id, topic_name, keywords, alert_urgency_threshold,
+                   active, created_at, updated_at
+            FROM topics
+            WHERE id = $1
+            """,
+            topic_id,
+        )
+
+    return dict(row)
+
+
+@router.delete("/{topic_id}")
+async def delete_topic(topic_id: int) -> dict:
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute("DELETE FROM topics WHERE id = $1", topic_id)
+
+    if result.endswith("0"):
+        raise HTTPException(status_code=404, detail="Topic not found")
+
+    return {"ok": True, "deleted_topic_id": topic_id}
