@@ -70,6 +70,7 @@ app = FastAPI(title=settings.app_name, version="1.0.0", lifespan=lifespan)
 
 allowed_origins = [
     settings.frontend_url,
+    "https://news-aggregator-seven-rho.vercel.app",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]
@@ -81,6 +82,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 app.include_router(news.router, prefix="/api")
 app.include_router(topics.router, prefix="/api")

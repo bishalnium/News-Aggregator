@@ -1,5 +1,6 @@
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
-const API_PREFIX = `${API_BASE}/api`;
+const API_BASE = import.meta.env.VITE_API_URL || (typeof window !== 'undefined' && window.location.protocol === 'https:' ? '' : 'http://localhost:8000');
+const API_PREFIX = import.meta.env.VITE_API_URL ? `${API_BASE}/api` : (typeof window !== 'undefined' && window.location.protocol === 'https:' ? '/backend/api' : `${API_BASE}/api`);
+
 
 async function request(path, options = {}) {
   const response = await fetch(`${API_PREFIX}${path}`, {
@@ -29,9 +30,13 @@ async function request(path, options = {}) {
 }
 
 export function getWebSocketUrl() {
+  if (typeof window !== 'undefined' && window.location.protocol === 'https:' && !import.meta.env.VITE_API_URL) {
+    return `wss://${window.location.host}/backend/api/ws/live`;
+  }
   const wsBase = API_BASE.replace("http://", "ws://").replace("https://", "wss://");
   return `${wsBase}/api/ws/live`;
 }
+
 
 export function fetchNews(params = {}) {
   const searchParams = new URLSearchParams();

@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/backend/:path*",
+      "destination": "http://140.245.198.223:8000/:path*"
+    }
+  ]
+}
