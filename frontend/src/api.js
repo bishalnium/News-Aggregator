@@ -81,7 +81,7 @@ export function createTopic(payload) {
   });
 }
 
-export function proposeAlertTopic(message, modelId = "groq_gpt_oss") {
+export function proposeAlertTopic(message, modelId = "cerebras_glm_4_7") {
   return request("/topics/ai-proposal", {
     method: "POST",
     body: JSON.stringify({ message, model_id: modelId }),

@@ -65,7 +65,7 @@ def _parse_provider_order(value: str) -> List[str]:
     allowed = {"groq", "gemini", "cerebras"}
     ordered = [item.lower() for item in _parse_csv(value)]
     filtered = [item for item in ordered if item in allowed]
-    return filtered or ["groq", "gemini", "cerebras"]
+    return filtered or ["groq", "cerebras", "gemini"]
 
 
 @dataclass
@@ -93,12 +93,24 @@ class Settings:
     twitter_poll_seconds: int
     twitter_cookies_file: str
 
-    cerebras_api_key: str
+    # Cerebras — multi-key support
+    cerebras_api_keys: List[str]
     cerebras_model: str
     cerebras_chat_model: str
+    cerebras_rpm: int
+    cerebras_rph: int
+    cerebras_rpd: int
+    cerebras_key_cooldown_seconds: int
+
+    # Groq — multi-key with rate limits
     groq_api_keys: List[str]
     groq_model: str
     groq_base_url: str
+    groq_rpm: int
+    groq_rpd: int
+    groq_key_cooldown_seconds: int
+
+    # Gemini — last resort
     gemini_api_keys: List[str]
     gemini_primary_model: str
     gemini_fallback_model: str
@@ -106,6 +118,8 @@ class Settings:
     gemini_fallback_rpm: int
     gemini_requests_per_day: int
     gemini_key_cooldown_seconds: int
+
+    # Provider ordering
     llm_provider_order: List[str]
     summary_provider_order: List[str]
     classification_provider_order: List[str]
@@ -126,6 +140,12 @@ class Settings:
             startup_interval = 120
 
         telegram_api_id = os.getenv("TELEGRAM_API_ID")
+
+        # Cerebras: support both CEREBRAS_API_KEYS (new) and CEREBRAS_API_KEY (old)
+        cerebras_keys_raw = os.getenv(
+            "CEREBRAS_API_KEYS",
+            os.getenv("CEREBRAS_API_KEY", ""),
+        )
 
         return cls(
             app_name=os.getenv("APP_NAME", "News Codex Aggregator"),
@@ -167,11 +187,19 @@ class Settings:
             twitter_cookies_file=os.getenv(
                 "TWITTER_COOKIES_FILE", "data/twitter_cookies.json"
             ),
-            cerebras_api_key=os.getenv("CEREBRAS_API_KEY", ""),
+            # Cerebras multi-key
+            cerebras_api_keys=_parse_csv(cerebras_keys_raw),
             cerebras_model=os.getenv(
                 "CEREBRAS_MODEL", "qwen-3-235b-a22b-instruct-2507"
             ),
             cerebras_chat_model=os.getenv("CEREBRAS_CHAT_MODEL", "zai-glm-4.7"),
+            cerebras_rpm=_parse_int(os.getenv("CEREBRAS_RPM"), 5),
+            cerebras_rph=_parse_int(os.getenv("CEREBRAS_RPH"), 150),
+            cerebras_rpd=_parse_int(os.getenv("CEREBRAS_RPD"), 2400),
+            cerebras_key_cooldown_seconds=_parse_int(
+                os.getenv("CEREBRAS_KEY_COOLDOWN_SECONDS"), 90
+            ),
+            # Groq multi-key with rate limits
             groq_api_keys=_parse_csv(
                 os.getenv("GROQ_API_KEYS", os.getenv("GROQ_API_KEY", ""))
             ),
@@ -179,6 +207,12 @@ class Settings:
             groq_base_url=os.getenv(
                 "GROQ_BASE_URL", "https://api.groq.com/openai/v1"
             ),
+            groq_rpm=_parse_int(os.getenv("GROQ_RPM"), 30),
+            groq_rpd=_parse_int(os.getenv("GROQ_RPD"), 1000),
+            groq_key_cooldown_seconds=_parse_int(
+                os.getenv("GROQ_KEY_COOLDOWN_SECONDS"), 120
+            ),
+            # Gemini (last resort)
             gemini_api_keys=_parse_csv(os.getenv("GEMINI_API_KEYS", "")),
             gemini_primary_model=os.getenv("GEMINI_PRIMARY_MODEL", "gemini-2.5-flash-lite"),
             gemini_fallback_model=os.getenv("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash"),
@@ -186,19 +220,20 @@ class Settings:
             gemini_fallback_rpm=_parse_int(os.getenv("GEMINI_FALLBACK_RPM"), 15),
             gemini_requests_per_day=_parse_int(os.getenv("GEMINI_REQUESTS_PER_DAY"), 1500),
             gemini_key_cooldown_seconds=_parse_int(os.getenv("GEMINI_KEY_COOLDOWN_SECONDS"), 90),
+            # Provider ordering — Gemini always last
             llm_provider_order=_parse_provider_order(
-                os.getenv("LLM_PROVIDER_ORDER", "groq,gemini,cerebras")
+                os.getenv("LLM_PROVIDER_ORDER", "groq,cerebras,gemini")
             ),
             summary_provider_order=_parse_provider_order(
                 os.getenv(
                     "SUMMARY_PROVIDER_ORDER",
-                    os.getenv("LLM_PROVIDER_ORDER", "groq,gemini,cerebras"),
+                    os.getenv("LLM_PROVIDER_ORDER", "groq,cerebras,gemini"),
                 )
             ),
             classification_provider_order=_parse_provider_order(
                 os.getenv(
                     "CLASSIFICATION_PROVIDER_ORDER",
-                    os.getenv("LLM_PROVIDER_ORDER", "groq,gemini,cerebras"),
+                    os.getenv("LLM_PROVIDER_ORDER", "groq,cerebras,gemini"),
                 )
             ),
             chat_default_model=os.getenv("CHAT_DEFAULT_MODEL", "groq_gpt_oss"),
@@ -255,6 +290,12 @@ def chat_model_options() -> list[dict[str, str]]:
             "model": settings.chat_groq_model,
         },
         {
+            "id": "cerebras_glm_4_7",
+            "label": "Cerebras GLM 4.7",
+            "provider": "cerebras",
+            "model": settings.cerebras_chat_model,
+        },
+        {
             "id": "gemini_flash",
             "label": "Gemini 2.5 Flash",
             "provider": "gemini",
@@ -266,14 +307,7 @@ def chat_model_options() -> list[dict[str, str]]:
             "provider": "gemini",
             "model": settings.gemini_primary_model,
         },
-        {
-            "id": "cerebras_glm_4_7",
-            "label": "Cerebras GLM 4.7",
-            "provider": "cerebras",
-            "model": settings.cerebras_chat_model,
-        },
     ]
-
 
 
 def resolve_chat_model(model_id: str | None) -> dict[str, str]:

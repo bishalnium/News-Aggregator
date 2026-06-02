@@ -22,16 +22,37 @@ from config import settings
 from database import get_pool
 
 
-_client: Any | None = None
-_client_import_error_logged = False
-_gemini_import_error_logged = False
+# ---------------------------------------------------------------------------
+# Module-level state
+# ---------------------------------------------------------------------------
+
 _DEFAULT_TOP_P = 0.8
+_gemini_import_error_logged = False
+_cerebras_import_error_logged = False
+
+# Groq state
 _groq_active_key_index = 0
 _groq_key_cooldown_until: dict[int, datetime] = {}
+_groq_minute_usage: dict[tuple[int, datetime], int] = {}
+_groq_day_usage: dict[tuple[int, date], int] = {}
+
+# Cerebras state
+_cerebras_active_key_index = 0
+_cerebras_key_cooldown_until: dict[int, datetime] = {}
+_cerebras_minute_usage: dict[tuple[int, datetime], int] = {}
+_cerebras_hour_usage: dict[tuple[int, datetime], int] = {}
+_cerebras_day_usage: dict[tuple[int, date], int] = {}
+_cerebras_clients: dict[int, Any] = {}
+
+# Gemini state
 _gemini_key_cooldown_until: dict[int, datetime] = {}
 _gemini_minute_usage: dict[tuple[int, str, datetime], int] = {}
 _gemini_day_usage: dict[tuple[int, str, date], int] = {}
 
+
+# ---------------------------------------------------------------------------
+# Error classes
+# ---------------------------------------------------------------------------
 
 class _GroqRequestError(Exception):
     def __init__(self, status_code: int | None, message: str) -> None:
@@ -40,14 +61,18 @@ class _GroqRequestError(Exception):
         self.message = message
 
 
-def _log_missing_sdk_once() -> None:
-    global _client_import_error_logged
-    if _client_import_error_logged:
+# ---------------------------------------------------------------------------
+# SDK availability logging
+# ---------------------------------------------------------------------------
+
+def _log_missing_cerebras_once() -> None:
+    global _cerebras_import_error_logged
+    if _cerebras_import_error_logged:
         return
-    _client_import_error_logged = True
+    _cerebras_import_error_logged = True
     print(
         "Cerebras SDK is not available. Install 'cerebras-cloud-sdk' "
-        "or fallback heuristics will be used."
+        "or fallback providers will be used."
     )
 
 
@@ -62,16 +87,19 @@ def _log_missing_gemini_once() -> None:
     )
 
 
-def _get_client() -> Any | None:
-    global _client
-    if not settings.cerebras_api_key:
-        return None
-    if Cerebras is None:
-        _log_missing_sdk_once()
-        return None
-    if _client is None:
-        _client = Cerebras(api_key=settings.cerebras_api_key)
-    return _client
+# ---------------------------------------------------------------------------
+# Key normalization helpers
+# ---------------------------------------------------------------------------
+
+def _normalized_groq_keys() -> list[str]:
+    normalized: list[str] = []
+    for raw_key in settings.groq_api_keys:
+        if not raw_key:
+            continue
+        key = raw_key.strip().strip('"').strip("'")
+        if key:
+            normalized.append(key)
+    return normalized
 
 
 def _normalized_gemini_keys() -> list[str]:
@@ -85,20 +113,20 @@ def _normalized_gemini_keys() -> list[str]:
     return normalized
 
 
-def _gemini_models_with_limits() -> list[tuple[str, int]]:
-    items: list[tuple[str, int]] = []
+def _normalized_cerebras_keys() -> list[str]:
+    normalized: list[str] = []
+    for raw_key in settings.cerebras_api_keys:
+        if not raw_key:
+            continue
+        key = raw_key.strip().strip('"').strip("'")
+        if key:
+            normalized.append(key)
+    return normalized
 
-    primary_model = (settings.gemini_primary_model or "").strip()
-    fallback_model = (settings.gemini_fallback_model or "").strip()
 
-    if primary_model:
-        items.append((primary_model, max(settings.gemini_primary_rpm, 1)))
-
-    if fallback_model and fallback_model != primary_model:
-        items.append((fallback_model, max(settings.gemini_fallback_rpm, 1)))
-
-    return items
-
+# ---------------------------------------------------------------------------
+# Provider availability check
+# ---------------------------------------------------------------------------
 
 def _has_llm_provider(provider_order: list[str] | None = None) -> bool:
     order = provider_order or settings.llm_provider_order
@@ -107,20 +135,58 @@ def _has_llm_provider(provider_order: list[str] | None = None) -> bool:
             return True
         if provider == "gemini" and _normalized_gemini_keys():
             return True
-        if provider == "cerebras" and _get_client() is not None:
-            return True
+        if provider == "cerebras" and _normalized_cerebras_keys():
+            if Cerebras is not None:
+                return True
     return False
 
 
-def _normalized_groq_keys() -> list[str]:
-    normalized: list[str] = []
-    for raw_key in settings.groq_api_keys:
-        if not raw_key:
-            continue
-        key = raw_key.strip().strip('"').strip("'")
-        if key:
-            normalized.append(key)
-    return normalized
+# ===================================================================
+# GROQ — multi-key rotation with RPM/RPD tracking
+# ===================================================================
+
+def _cleanup_groq_state(now: datetime) -> None:
+    stale_minute_cutoff = now - timedelta(minutes=3)
+    for key in list(_groq_minute_usage.keys()):
+        if key[1] < stale_minute_cutoff:
+            _groq_minute_usage.pop(key, None)
+
+    for key in list(_groq_day_usage.keys()):
+        if key[1] < now.date():
+            _groq_day_usage.pop(key, None)
+
+    for key_index, cooldown_until in list(_groq_key_cooldown_until.items()):
+        if cooldown_until <= now:
+            _groq_key_cooldown_until.pop(key_index, None)
+
+
+def _is_groq_key_available(key_index: int, now: datetime) -> bool:
+    cooldown_until = _groq_key_cooldown_until.get(key_index)
+    if cooldown_until and cooldown_until > now:
+        return False
+
+    minute_bucket = now.replace(second=0, microsecond=0)
+    minute_count = _groq_minute_usage.get((key_index, minute_bucket), 0)
+    if minute_count >= max(settings.groq_rpm, 1):
+        return False
+
+    day_bucket = now.date()
+    day_count = _groq_day_usage.get((key_index, day_bucket), 0)
+    if day_count >= max(settings.groq_rpd, 1):
+        return False
+
+    return True
+
+
+def _increment_groq_usage(key_index: int, now: datetime) -> None:
+    minute_bucket = now.replace(second=0, microsecond=0)
+    day_bucket = now.date()
+
+    minute_key = (key_index, minute_bucket)
+    day_key = (key_index, day_bucket)
+
+    _groq_minute_usage[minute_key] = _groq_minute_usage.get(minute_key, 0) + 1
+    _groq_day_usage[day_key] = _groq_day_usage.get(day_key, 0) + 1
 
 
 def _get_active_groq_key() -> tuple[int, str] | tuple[None, None]:
@@ -131,26 +197,23 @@ def _get_active_groq_key() -> tuple[int, str] | tuple[None, None]:
         return None, None
 
     now = datetime.now(timezone.utc)
-    for key_index, cooldown_until in list(_groq_key_cooldown_until.items()):
-        if cooldown_until <= now:
-            _groq_key_cooldown_until.pop(key_index, None)
+    _cleanup_groq_state(now)
 
     if _groq_active_key_index >= len(keys):
         _groq_active_key_index = 0
 
-    if _groq_active_key_index not in _groq_key_cooldown_until:
+    # Try current key first
+    if _is_groq_key_available(_groq_active_key_index, now):
         return _groq_active_key_index, keys[_groq_active_key_index]
 
-    for index, key in enumerate(keys):
-        if index not in _groq_key_cooldown_until:
+    # Rotate to find available key
+    for index in range(len(keys)):
+        if _is_groq_key_available(index, now):
             _groq_active_key_index = index
-            return index, key
+            return index, keys[index]
 
-    soonest_index = min(
-        _groq_key_cooldown_until,
-        key=lambda idx: _groq_key_cooldown_until[idx],
-    )
-    _groq_active_key_index = soonest_index
+    # All keys at limit — return least recently used
+    soonest_index = _groq_active_key_index
     return soonest_index, keys[soonest_index]
 
 
@@ -162,7 +225,7 @@ def _mark_groq_key_exhausted(exhausted_index: int, reason: str) -> None:
         return
 
     lowered = reason.lower()
-    cooldown_seconds = 3600
+    cooldown_seconds = settings.groq_key_cooldown_seconds
     if "invalid" in lowered or "revoked" in lowered or "deactivated" in lowered:
         cooldown_seconds = 6 * 3600
 
@@ -210,7 +273,6 @@ def _is_groq_retryable_error(status_code: int | None, message: str) -> bool:
 
     lowered = (message or "").lower()
     if status_code == 429:
-        # Treat generic throttling as transient; key rotation is reserved for quota/key failures.
         return not _is_groq_key_exhausted_error(status_code, lowered)
 
     transient_signals = [
@@ -222,117 +284,376 @@ def _is_groq_retryable_error(status_code: int | None, message: str) -> bool:
     return any(signal in lowered for signal in transient_signals)
 
 
-def _extract_text_content(content: Any) -> str:
-    if content is None:
-        return ""
+async def _create_groq_completion_async(
+    messages: list[dict[str, str]],
+    *,
+    max_completion_tokens: int,
+    temperature: float,
+    model_name: str | None = None,
+) -> dict[str, Any] | None:
+    keys = _normalized_groq_keys()
+    if not keys:
+        return None
 
-    if isinstance(content, str):
-        return content
+    max_attempts = max(3, len(keys) + 1)
+    for attempt in range(1, max_attempts + 1):
+        key_index, api_key = _get_active_groq_key()
+        if api_key is None or key_index is None:
+            return None
 
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, str):
-                parts.append(item)
+        url = settings.groq_base_url.rstrip("/") + "/chat/completions"
+        resolved_model_name = model_name or settings.groq_model
+        payload = {
+            "model": resolved_model_name,
+            "messages": messages,
+            "temperature": temperature,
+            "top_p": _DEFAULT_TOP_P,
+            "max_tokens": max_completion_tokens,
+            "stream": False,
+        }
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=25.0) as client:
+                response = await client.post(url, json=payload, headers=headers)
+
+            if response.status_code >= 400:
+                detail = response.text
+                try:
+                    body = response.json()
+                    error = body.get("error", {}) if isinstance(body, dict) else {}
+                    if isinstance(error, dict):
+                        detail = str(error.get("message") or detail)
+                except Exception:
+                    pass
+
+                raise _GroqRequestError(response.status_code, detail)
+
+            body = response.json()
+            if not isinstance(body, dict):
+                raise _GroqRequestError(response.status_code, "Unexpected Groq response shape")
+
+            usage_time = datetime.now(timezone.utc)
+            _increment_groq_usage(key_index, usage_time)
+            await _record_llm_usage(
+                provider="groq",
+                model_name=resolved_model_name,
+                api_key_label=f"groq-key-{key_index + 1}",
+                now=usage_time,
+            )
+            return body
+
+        except _GroqRequestError as exc:
+            if _is_groq_key_exhausted_error(exc.status_code, exc.message):
+                _mark_groq_key_exhausted(key_index, exc.message)
                 continue
-            if isinstance(item, dict):
-                if isinstance(item.get("text"), str):
-                    parts.append(item["text"])
-                elif isinstance(item.get("content"), str):
-                    parts.append(item["content"])
-        return "\n".join(parts).strip()
 
-    return str(content)
+            if attempt < max_attempts and _is_groq_retryable_error(exc.status_code, exc.message):
+                backoff_seconds = min(8, 2 ** (attempt - 1))
+                print(
+                    f"Groq transient error retry {attempt}/{max_attempts} after "
+                    f"{backoff_seconds}s: {exc.message}"
+                )
+                await asyncio.sleep(backoff_seconds)
+                continue
 
+            raise
 
-def _extract_response_text(response: Any) -> str:
-    if isinstance(response, str):
-        return response.strip()
-
-    if isinstance(response, dict):
-        choices = response.get("choices")
-        if not isinstance(choices, list) or not choices:
-            return ""
-        first = choices[0]
-        if not isinstance(first, dict):
-            return ""
-        message = first.get("message")
-        if isinstance(message, dict):
-            return _extract_text_content(message.get("content")).strip()
-        return ""
-
-    direct_text = getattr(response, "text", None)
-    if isinstance(direct_text, str) and direct_text.strip():
-        return direct_text.strip()
-
-    try:
-        choice = response.choices[0]
-        message = getattr(choice, "message", None)
-        if message is None:
-            return ""
-        return _extract_text_content(getattr(message, "content", None)).strip()
-    except Exception:
-        return ""
-
-
-def _extract_json_payload(text: str) -> dict[str, Any] | None:
-    raw = (text or "").strip()
-    if not raw:
-        return None
-
-    try:
-        parsed = json.loads(raw)
-        if isinstance(parsed, dict):
-            return parsed
-    except Exception:
-        pass
-
-    match = re.search(r"\{[\s\S]*\}", raw)
-    if not match:
-        return None
-
-    try:
-        parsed = json.loads(match.group(0))
-        if isinstance(parsed, dict):
-            return parsed
-    except Exception:
-        return None
+        except Exception as exc:
+            message = str(exc)
+            if attempt < max_attempts and _is_groq_retryable_error(None, message):
+                backoff_seconds = min(8, 2 ** (attempt - 1))
+                print(
+                    f"Groq transient error retry {attempt}/{max_attempts} after "
+                    f"{backoff_seconds}s: {message}"
+                )
+                await asyncio.sleep(backoff_seconds)
+                continue
+            raise
 
     return None
 
 
-def _messages_to_prompt(messages: list[dict[str, str]]) -> str:
-    sections: list[str] = []
-    for message in messages:
-        role = str(message.get("role", "user")).upper()
-        content = str(message.get("content", "")).strip()
-        if not content:
-            continue
-        sections.append(f"{role}:\n{content}")
-    return "\n\n".join(sections).strip()
+# ===================================================================
+# CEREBRAS — multi-key rotation with RPM/RPH/RPD tracking
+# ===================================================================
+
+def _get_cerebras_client(key_index: int) -> Any | None:
+    keys = _normalized_cerebras_keys()
+    if not keys or key_index >= len(keys):
+        return None
+    if Cerebras is None:
+        _log_missing_cerebras_once()
+        return None
+    if key_index not in _cerebras_clients:
+        _cerebras_clients[key_index] = Cerebras(api_key=keys[key_index])
+    return _cerebras_clients[key_index]
 
 
-def _extract_gemini_text(response: Any) -> str:
-    text = getattr(response, "text", None)
-    if isinstance(text, str) and text.strip():
-        return text.strip()
+def _cleanup_cerebras_state(now: datetime) -> None:
+    stale_minute_cutoff = now - timedelta(minutes=3)
+    for key in list(_cerebras_minute_usage.keys()):
+        if key[1] < stale_minute_cutoff:
+            _cerebras_minute_usage.pop(key, None)
 
-    candidates = getattr(response, "candidates", None)
-    if isinstance(candidates, list):
-        parts: list[str] = []
-        for candidate in candidates:
-            content = getattr(candidate, "content", None)
-            response_parts = getattr(content, "parts", None)
-            if not response_parts:
+    stale_hour_cutoff = now - timedelta(hours=2)
+    for key in list(_cerebras_hour_usage.keys()):
+        if key[1] < stale_hour_cutoff:
+            _cerebras_hour_usage.pop(key, None)
+
+    for key in list(_cerebras_day_usage.keys()):
+        if key[1] < now.date():
+            _cerebras_day_usage.pop(key, None)
+
+    for key_index, cooldown_until in list(_cerebras_key_cooldown_until.items()):
+        if cooldown_until <= now:
+            _cerebras_key_cooldown_until.pop(key_index, None)
+
+
+def _is_cerebras_key_available(key_index: int, now: datetime) -> bool:
+    cooldown_until = _cerebras_key_cooldown_until.get(key_index)
+    if cooldown_until and cooldown_until > now:
+        return False
+
+    minute_bucket = now.replace(second=0, microsecond=0)
+    minute_count = _cerebras_minute_usage.get((key_index, minute_bucket), 0)
+    if minute_count >= max(settings.cerebras_rpm, 1):
+        return False
+
+    hour_bucket = now.replace(minute=0, second=0, microsecond=0)
+    hour_count = _cerebras_hour_usage.get((key_index, hour_bucket), 0)
+    if hour_count >= max(settings.cerebras_rph, 1):
+        return False
+
+    day_bucket = now.date()
+    day_count = _cerebras_day_usage.get((key_index, day_bucket), 0)
+    if day_count >= max(settings.cerebras_rpd, 1):
+        return False
+
+    return True
+
+
+def _increment_cerebras_usage(key_index: int, now: datetime) -> None:
+    minute_bucket = now.replace(second=0, microsecond=0)
+    hour_bucket = now.replace(minute=0, second=0, microsecond=0)
+    day_bucket = now.date()
+
+    minute_key = (key_index, minute_bucket)
+    hour_key = (key_index, hour_bucket)
+    day_key = (key_index, day_bucket)
+
+    _cerebras_minute_usage[minute_key] = _cerebras_minute_usage.get(minute_key, 0) + 1
+    _cerebras_hour_usage[hour_key] = _cerebras_hour_usage.get(hour_key, 0) + 1
+    _cerebras_day_usage[day_key] = _cerebras_day_usage.get(day_key, 0) + 1
+
+
+def _get_active_cerebras_key() -> tuple[int, str] | tuple[None, None]:
+    global _cerebras_active_key_index
+
+    keys = _normalized_cerebras_keys()
+    if not keys:
+        return None, None
+
+    now = datetime.now(timezone.utc)
+    _cleanup_cerebras_state(now)
+
+    if _cerebras_active_key_index >= len(keys):
+        _cerebras_active_key_index = 0
+
+    if _is_cerebras_key_available(_cerebras_active_key_index, now):
+        return _cerebras_active_key_index, keys[_cerebras_active_key_index]
+
+    for index in range(len(keys)):
+        if _is_cerebras_key_available(index, now):
+            _cerebras_active_key_index = index
+            return index, keys[index]
+
+    soonest_index = _cerebras_active_key_index
+    return soonest_index, keys[soonest_index]
+
+
+def _mark_cerebras_key_exhausted(exhausted_index: int, reason: str) -> None:
+    global _cerebras_active_key_index
+
+    keys = _normalized_cerebras_keys()
+    if not keys:
+        return
+
+    lowered = reason.lower()
+    cooldown_seconds = settings.cerebras_key_cooldown_seconds
+    if "invalid" in lowered or "revoked" in lowered or "deactivated" in lowered:
+        cooldown_seconds = 6 * 3600
+
+    _cerebras_key_cooldown_until[exhausted_index] = datetime.now(timezone.utc) + timedelta(
+        seconds=cooldown_seconds
+    )
+
+    # Invalidate cached client for this key
+    _cerebras_clients.pop(exhausted_index, None)
+
+    for offset in range(1, len(keys) + 1):
+        next_index = (exhausted_index + offset) % len(keys)
+        if next_index not in _cerebras_key_cooldown_until:
+            _cerebras_active_key_index = next_index
+            print(
+                "Cerebras key switched to next configured key "
+                f"(index {next_index + 1}/{len(keys)}) due to: {reason}"
+            )
+            return
+
+    print(
+        "All configured Cerebras keys are cooling down. "
+        "Continuing with the least recently blocked key until quota resets."
+    )
+
+
+def _is_retryable_cerebras_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    retry_signals = [
+        "429",
+        "queue_exceeded",
+        "high traffic",
+        "rate limit",
+        "temporarily unavailable",
+        "timeout",
+    ]
+    return any(signal in text for signal in retry_signals)
+
+
+def _is_cerebras_key_exhausted_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    exhaustion_signals = [
+        "invalid api key",
+        "api key is invalid",
+        "deactivated",
+        "revoked",
+        "unauthorized",
+        "403",
+        "401",
+        "quota",
+        "exceeded",
+    ]
+    return any(signal in text for signal in exhaustion_signals)
+
+
+def _create_cerebras_completion_sync(
+    messages: list[dict[str, str]],
+    *,
+    max_completion_tokens: int,
+    temperature: float,
+    model_name: str | None = None,
+    key_index: int = 0,
+) -> Any | None:
+    client = _get_cerebras_client(key_index)
+    if client is None:
+        return None
+
+    return client.chat.completions.create(
+        messages=messages,
+        model=model_name or settings.cerebras_model,
+        max_completion_tokens=max_completion_tokens,
+        temperature=temperature,
+        top_p=_DEFAULT_TOP_P,
+        stream=False,
+    )
+
+
+async def _create_cerebras_completion_async(
+    messages: list[dict[str, str]],
+    *,
+    max_completion_tokens: int,
+    temperature: float,
+    model_name: str | None = None,
+) -> dict[str, Any] | None:
+    keys = _normalized_cerebras_keys()
+    if not keys:
+        return None
+    if Cerebras is None:
+        _log_missing_cerebras_once()
+        return None
+
+    max_attempts = max(3, len(keys) + 1)
+    for attempt in range(1, max_attempts + 1):
+        key_index, api_key = _get_active_cerebras_key()
+        if api_key is None or key_index is None:
+            return None
+
+        try:
+            response = await asyncio.to_thread(
+                _create_cerebras_completion_sync,
+                messages,
+                max_completion_tokens=max_completion_tokens,
+                temperature=temperature,
+                model_name=model_name,
+                key_index=key_index,
+            )
+            if response is None:
                 continue
-            for part in response_parts:
-                part_text = getattr(part, "text", None)
-                if isinstance(part_text, str) and part_text.strip():
-                    parts.append(part_text.strip())
-        if parts:
-            return "\n".join(parts).strip()
 
-    return ""
+            usage_time = datetime.now(timezone.utc)
+            _increment_cerebras_usage(key_index, usage_time)
+            await _record_llm_usage(
+                provider="cerebras",
+                model_name=model_name or settings.cerebras_model,
+                api_key_label=f"cerebras-key-{key_index + 1}",
+                now=usage_time,
+            )
+
+            # Normalize response to dict format
+            text = _extract_response_text(response)
+            if not text:
+                continue
+
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": text,
+                        }
+                    }
+                ]
+            }
+
+        except Exception as exc:
+            if _is_cerebras_key_exhausted_error(exc):
+                _mark_cerebras_key_exhausted(key_index, str(exc))
+                continue
+
+            if attempt < max_attempts and _is_retryable_cerebras_error(exc):
+                backoff_seconds = min(8, 2 ** (attempt - 1))
+                print(
+                    f"Cerebras request retry {attempt}/{max_attempts} after "
+                    f"{backoff_seconds}s due to transient error: {exc}"
+                )
+                await asyncio.sleep(backoff_seconds)
+                continue
+
+            print(f"Cerebras completion error: {exc}")
+            break
+
+    return None
+
+
+# ===================================================================
+# GEMINI — multi-key rotation with RPM/daily tracking
+# ===================================================================
+
+def _gemini_models_with_limits() -> list[tuple[str, int]]:
+    items: list[tuple[str, int]] = []
+
+    primary_model = (settings.gemini_primary_model or "").strip()
+    fallback_model = (settings.gemini_fallback_model or "").strip()
+
+    if primary_model:
+        items.append((primary_model, max(settings.gemini_primary_rpm, 1)))
+
+    if fallback_model and fallback_model != primary_model:
+        items.append((fallback_model, max(settings.gemini_fallback_rpm, 1)))
+
+    return items
 
 
 def _cleanup_gemini_state(now: datetime) -> None:
@@ -429,49 +750,38 @@ def _increment_gemini_usage(key_index: int, model_name: str, now: datetime) -> N
     _gemini_day_usage[day_key] = _gemini_day_usage.get(day_key, 0) + 1
 
 
-async def _record_llm_usage(
-    *,
-    provider: str,
-    model_name: str,
-    api_key_label: str,
-    now: datetime,
-) -> None:
-    try:
-        pool = get_pool()
-    except RuntimeError:
-        return
+def _extract_gemini_text(response: Any) -> str:
+    text = getattr(response, "text", None)
+    if isinstance(text, str) and text.strip():
+        return text.strip()
 
-    minute_bucket = now.replace(second=0, microsecond=0)
-    day_bucket = datetime(
-        now.year,
-        now.month,
-        now.day,
-        tzinfo=timezone.utc,
-    )
+    candidates = getattr(response, "candidates", None)
+    if isinstance(candidates, list):
+        parts: list[str] = []
+        for candidate in candidates:
+            content = getattr(candidate, "content", None)
+            response_parts = getattr(content, "parts", None)
+            if not response_parts:
+                continue
+            for part in response_parts:
+                part_text = getattr(part, "text", None)
+                if isinstance(part_text, str) and part_text.strip():
+                    parts.append(part_text.strip())
+        if parts:
+            return "\n".join(parts).strip()
 
-    async with pool.acquire() as conn:
-        for bucket_type, bucket_start in (("minute", minute_bucket), ("day", day_bucket)):
-            await conn.execute(
-                """
-                INSERT INTO llm_api_usage(
-                    provider,
-                    model_name,
-                    api_key_label,
-                    bucket_type,
-                    bucket_start,
-                    request_count
-                )
-                VALUES($1, $2, $3, $4, $5, 1) AS incoming
-                ON DUPLICATE KEY UPDATE
-                    request_count = llm_api_usage.request_count + 1,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                provider,
-                model_name,
-                api_key_label,
-                bucket_type,
-                bucket_start,
-            )
+    return ""
+
+
+def _messages_to_prompt(messages: list[dict[str, str]]) -> str:
+    sections: list[str] = []
+    for message in messages:
+        role = str(message.get("role", "user")).upper()
+        content = str(message.get("content", "")).strip()
+        if not content:
+            continue
+        sections.append(f"{role}:\n{content}")
+    return "\n\n".join(sections).strip()
 
 
 def _create_gemini_completion_sync(
@@ -578,117 +888,132 @@ async def _create_gemini_completion_async(
     return None
 
 
-def _create_completion_sync(
-    messages: list[dict[str, str]],
-    *,
-    max_completion_tokens: int,
-    temperature: float,
-    model_name: str | None = None,
-) -> Any | None:
-    client = _get_client()
-    if client is None:
+# ===================================================================
+# Unified completion dispatcher
+# ===================================================================
+
+def _extract_text_content(content: Any) -> str:
+    if content is None:
+        return ""
+
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if isinstance(item, dict):
+                if isinstance(item.get("text"), str):
+                    parts.append(item["text"])
+                elif isinstance(item.get("content"), str):
+                    parts.append(item["content"])
+        return "\n".join(parts).strip()
+
+    return str(content)
+
+
+def _extract_response_text(response: Any) -> str:
+    if isinstance(response, str):
+        return response.strip()
+
+    if isinstance(response, dict):
+        choices = response.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return ""
+        first = choices[0]
+        if not isinstance(first, dict):
+            return ""
+        message = first.get("message")
+        if isinstance(message, dict):
+            return _extract_text_content(message.get("content")).strip()
+        return ""
+
+    direct_text = getattr(response, "text", None)
+    if isinstance(direct_text, str) and direct_text.strip():
+        return direct_text.strip()
+
+    try:
+        choice = response.choices[0]
+        message = getattr(choice, "message", None)
+        if message is None:
+            return ""
+        return _extract_text_content(getattr(message, "content", None)).strip()
+    except Exception:
+        return ""
+
+
+def _extract_json_payload(text: str) -> dict[str, Any] | None:
+    raw = (text or "").strip()
+    if not raw:
         return None
 
-    return client.chat.completions.create(
-        messages=messages,
-        model=model_name or settings.cerebras_model,
-        max_completion_tokens=max_completion_tokens,
-        temperature=temperature,
-        top_p=_DEFAULT_TOP_P,
-        stream=False,
-    )
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
 
-
-async def _create_groq_completion_async(
-    messages: list[dict[str, str]],
-    *,
-    max_completion_tokens: int,
-    temperature: float,
-    model_name: str | None = None,
-) -> dict[str, Any] | None:
-    keys = _normalized_groq_keys()
-    if not keys:
+    match = re.search(r"\{[\s\S]*\}", raw)
+    if not match:
         return None
 
-    # One key at a time. Rotate only when key is invalid or quota-exhausted.
-    max_attempts = max(3, len(keys) + 1)
-    for attempt in range(1, max_attempts + 1):
-        key_index, api_key = _get_active_groq_key()
-        if api_key is None or key_index is None:
-            return None
-
-        url = settings.groq_base_url.rstrip("/") + "/chat/completions"
-        resolved_model_name = model_name or settings.groq_model
-        payload = {
-            "model": resolved_model_name,
-            "messages": messages,
-            "temperature": temperature,
-            "top_p": _DEFAULT_TOP_P,
-            "max_tokens": max_completion_tokens,
-            "stream": False,
-        }
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
-
-        try:
-            async with httpx.AsyncClient(timeout=25.0) as client:
-                response = await client.post(url, json=payload, headers=headers)
-
-            if response.status_code >= 400:
-                detail = response.text
-                try:
-                    body = response.json()
-                    error = body.get("error", {}) if isinstance(body, dict) else {}
-                    if isinstance(error, dict):
-                        detail = str(error.get("message") or detail)
-                except Exception:
-                    pass
-
-                raise _GroqRequestError(response.status_code, detail)
-
-            body = response.json()
-            if not isinstance(body, dict):
-                raise _GroqRequestError(response.status_code, "Unexpected Groq response shape")
-
-            await _record_llm_usage(
-                provider="groq",
-                model_name=resolved_model_name,
-                api_key_label=f"groq-key-{key_index + 1}",
-                now=datetime.now(timezone.utc),
-            )
-            return body
-
-        except _GroqRequestError as exc:
-            if _is_groq_key_exhausted_error(exc.status_code, exc.message):
-                _mark_groq_key_exhausted(key_index, exc.message)
-                continue
-
-            if attempt < max_attempts and _is_groq_retryable_error(exc.status_code, exc.message):
-                backoff_seconds = min(8, 2 ** (attempt - 1))
-                print(
-                    f"Groq transient error retry {attempt}/{max_attempts} after "
-                    f"{backoff_seconds}s: {exc.message}"
-                )
-                await asyncio.sleep(backoff_seconds)
-                continue
-
-            raise
-
-        except Exception as exc:
-            message = str(exc)
-            if attempt < max_attempts and _is_groq_retryable_error(None, message):
-                backoff_seconds = min(8, 2 ** (attempt - 1))
-                print(
-                    f"Groq transient error retry {attempt}/{max_attempts} after "
-                    f"{backoff_seconds}s: {message}"
-                )
-                await asyncio.sleep(backoff_seconds)
-                continue
-            raise
+    try:
+        parsed = json.loads(match.group(0))
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        return None
 
     return None
+
+
+async def _record_llm_usage(
+    *,
+    provider: str,
+    model_name: str,
+    api_key_label: str,
+    now: datetime,
+) -> None:
+    try:
+        pool = get_pool()
+    except RuntimeError:
+        return
+
+    minute_bucket = now.replace(second=0, microsecond=0)
+    day_bucket = datetime(
+        now.year,
+        now.month,
+        now.day,
+        tzinfo=timezone.utc,
+    )
+
+    async with pool.acquire() as conn:
+        for bucket_type, bucket_start in (("minute", minute_bucket), ("day", day_bucket)):
+            await conn.execute(
+                """
+                INSERT INTO llm_api_usage(
+                    provider,
+                    model_name,
+                    api_key_label,
+                    bucket_type,
+                    bucket_start,
+                    request_count
+                )
+                VALUES($1, $2, $3, $4, $5, 1) AS incoming
+                ON DUPLICATE KEY UPDATE
+                    request_count = llm_api_usage.request_count + 1,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                provider,
+                model_name,
+                api_key_label,
+                bucket_type,
+                bucket_start,
+            )
 
 
 async def _create_completion_async(
@@ -722,6 +1047,22 @@ async def _create_completion_async(
                 print(f"Groq completion error: {exc}")
                 continue
 
+        if provider == "cerebras":
+            if not _normalized_cerebras_keys() or Cerebras is None:
+                continue
+            try:
+                cerebras_response = await _create_cerebras_completion_async(
+                    messages,
+                    max_completion_tokens=max_completion_tokens,
+                    temperature=temperature,
+                    model_name=model_name if model_provider == "cerebras" else None,
+                )
+                if cerebras_response is not None:
+                    return cerebras_response
+            except Exception as exc:
+                print(f"Cerebras completion error: {exc}")
+                continue
+
         if provider == "gemini":
             if not _normalized_gemini_keys():
                 continue
@@ -738,54 +1079,63 @@ async def _create_completion_async(
                 print(f"Gemini completion error: {exc}")
                 continue
 
-        if provider == "cerebras":
-            if _get_client() is None:
-                continue
-            resolved_model_name = model_name if model_provider == "cerebras" else None
-            max_attempts = 4
-            for attempt in range(1, max_attempts + 1):
-                try:
-                    response = await asyncio.to_thread(
-                        _create_completion_sync,
-                        messages,
-                        max_completion_tokens=max_completion_tokens,
-                        temperature=temperature,
-                        model_name=resolved_model_name,
-                    )
-                    if response is not None:
-                        await _record_llm_usage(
-                            provider="cerebras",
-                            model_name=resolved_model_name or settings.cerebras_model,
-                            api_key_label="cerebras-key-1",
-                            now=datetime.now(timezone.utc),
-                        )
-                    return response
-                except Exception as exc:
-                    if attempt >= max_attempts or not _is_retryable_cerebras_error(exc):
-                        print(f"Cerebras completion error: {exc}")
-                        break
+    return None
 
-                    backoff_seconds = min(8, 2 ** (attempt - 1))
-                    print(
-                        f"Cerebras request retry {attempt}/{max_attempts} after "
-                        f"{backoff_seconds}s due to transient error: {exc}"
-                    )
-                    await asyncio.sleep(backoff_seconds)
+
+# ===================================================================
+# Chat cross-provider fallback wrapper
+# ===================================================================
+
+async def _create_completion_with_fallback(
+    messages: list[dict[str, str]],
+    *,
+    max_completion_tokens: int,
+    temperature: float,
+    model_provider: str | None = None,
+    model_name: str | None = None,
+) -> Any | None:
+    """Try the selected provider first, then fall back through the full chain.
+
+    This is used by chat and alert proposal endpoints where a specific model
+    is selected by the user but we don't want to give up if that provider fails.
+    Fallback order: groq -> cerebras -> gemini (Gemini always last).
+    """
+    # First try the selected provider
+    if model_provider:
+        try:
+            response = await _create_completion_async(
+                messages,
+                max_completion_tokens=max_completion_tokens,
+                temperature=temperature,
+                model_provider=model_provider,
+                model_name=model_name,
+            )
+            if response is not None:
+                return response
+        except Exception as exc:
+            print(f"Primary provider ({model_provider}) failed: {exc}")
+
+    # Fall back through the full chain, skipping the already-tried provider
+    fallback_order = [p for p in settings.llm_provider_order if p != model_provider]
+    if fallback_order:
+        try:
+            response = await _create_completion_async(
+                messages,
+                max_completion_tokens=max_completion_tokens,
+                temperature=temperature,
+                provider_order=fallback_order,
+            )
+            if response is not None:
+                return response
+        except Exception as exc:
+            print(f"Fallback chain failed: {exc}")
 
     return None
 
-def _is_retryable_cerebras_error(exc: Exception) -> bool:
-    text = str(exc).lower()
-    retry_signals = [
-        "429",
-        "queue_exceeded",
-        "high traffic",
-        "rate limit",
-        "temporarily unavailable",
-        "timeout",
-    ]
-    return any(signal in text for signal in retry_signals)
 
+# ===================================================================
+# Instrument extraction and text utilities
+# ===================================================================
 
 def _extract_instruments(text: str) -> list[str]:
     mapping = {
@@ -825,6 +1175,10 @@ def _build_fallback_window_summary(news_rows: list[dict[str, Any]]) -> str:
     numbered = [f"{index}. {line}" for index, line in enumerate(lines, start=1)]
     return "Latest updates:\n" + "\n".join(numbered)
 
+
+# ===================================================================
+# Alert topic proposal
+# ===================================================================
 
 _ALERT_KEYWORD_STOPWORDS = {
     "alert",
@@ -994,9 +1348,16 @@ async def propose_alert_topic_from_context(
     model_provider: str | None = None,
     model_name: str | None = None,
 ) -> dict[str, Any]:
+    """Alert builder: GLM 4.7 first, GPT-OSS second, Gemini last."""
     fallback = _fallback_alert_proposal(instruction)
+
+    # Default alert builder order: cerebras -> groq -> gemini
+    if not model_provider:
+        model_provider = "cerebras"
+        model_name = settings.cerebras_chat_model
+
     provider_order = [model_provider] if model_provider else settings.llm_provider_order
-    if not _has_llm_provider(provider_order):
+    if not _has_llm_provider(provider_order) and not _has_llm_provider():
         return fallback
 
     context_lines: list[str] = []
@@ -1028,7 +1389,7 @@ Do not save the topic. Do not ask a follow-up question. The UI will ask for conf
     )
 
     try:
-        response = await _create_completion_async(
+        response = await _create_completion_with_fallback(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt[:14000]},
@@ -1048,6 +1409,10 @@ Do not save the topic. Do not ask a follow-up question. The UI will ask for conf
         print(f"LLM alert proposal error: {exc}")
         return fallback
 
+
+# ===================================================================
+# News classification
+# ===================================================================
 
 def _strip_source_prefixes(text: str) -> str:
     if not text:
@@ -1107,6 +1472,7 @@ def classify_news_heuristic(raw_text: str) -> dict[str, Any]:
 
 
 async def classify_news(raw_text: str) -> dict[str, Any]:
+    """Classification: GPT-OSS first, GLM 4.7 second, Gemini last."""
     system_prompt = """You are a financial news classifier.
 Return ONLY JSON with fields:
 summary, category, urgency, sentiment, instruments_affected.
@@ -1154,7 +1520,12 @@ Return full summary text without truncating content.
         return _heuristic_classification(raw_text)
 
 
+# ===================================================================
+# Summarization
+# ===================================================================
+
 async def summarize_news_window(news_rows: list[dict[str, Any]], window_seconds: int) -> str:
+    """Summaries: GPT-OSS first, GLM 4.7 second, Gemini last."""
     if not news_rows:
         return "No major updates in this time window."
 
@@ -1206,6 +1577,10 @@ async def summarize_news_window(news_rows: list[dict[str, Any]], window_seconds:
         return _build_fallback_window_summary(news_rows)
 
 
+# ===================================================================
+# Chat — answer with news context + cross-provider fallback
+# ===================================================================
+
 async def answer_with_news_context(
     question: str,
     news_rows: list[dict[str, Any]],
@@ -1214,6 +1589,7 @@ async def answer_with_news_context(
     model_provider: str | None = None,
     model_name: str | None = None,
 ) -> str:
+    """Chat: user picks model, fallback chain if selected provider fails."""
     if not news_rows:
         return "I could not find matching news in the selected time range."
 
@@ -1223,8 +1599,8 @@ async def answer_with_news_context(
             f"[{row.get('fetched_at')}] {row.get('source')} / {row.get('source_channel')}: {row.get('raw_text')}"
         )
 
-    provider_order = [model_provider] if model_provider else settings.llm_provider_order
-    if not _has_llm_provider(provider_order):
+    # Check if ANY provider is available (not just the selected one)
+    if not _has_llm_provider():
         return (
             "Local fallback answer: I found "
             f"{len(news_rows)} relevant updates. Latest item: "
@@ -1244,7 +1620,8 @@ async def answer_with_news_context(
     )
 
     try:
-        response = await _create_completion_async(
+        # Use fallback wrapper: tries selected provider, then full chain
+        response = await _create_completion_with_fallback(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt[:14000]},
