@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from html import escape
 import re
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
-from typing import Iterable
+from typing import Any, Iterable
 
 from bot.telegram_notifier import send_alert_message
 from database import get_pool
@@ -55,6 +56,167 @@ _repeat_alert_sent_at: dict[str, datetime] = {}
 _symbol_alert_sent_at: dict[str, datetime] = {}
 
 
+# ---------------------------------------------------------------------------
+# In-memory topic cache — refreshed every 30 seconds
+# ---------------------------------------------------------------------------
+
+_cached_topics: list[dict[str, Any]] = []
+_cache_last_refresh: datetime | None = None
+_CACHE_TTL_SECONDS = 30
+_cache_lock = asyncio.Lock()
+
+# Instant alert dedup: {(topic_id, content_hash): timestamp}
+_instant_alert_sent: dict[tuple[int, str], datetime] = {}
+_INSTANT_ALERT_COOLDOWN = timedelta(minutes=2)
+
+
+async def get_cached_active_topics() -> list[dict[str, Any]]:
+    """Return active topics from in-memory cache. Refreshes from DB every 30s."""
+    global _cached_topics, _cache_last_refresh
+
+    now = datetime.now(timezone.utc)
+
+    if (
+        _cache_last_refresh is not None
+        and (now - _cache_last_refresh).total_seconds() < _CACHE_TTL_SECONDS
+    ):
+        return _cached_topics
+
+    async with _cache_lock:
+        # Double-check after acquiring lock
+        if (
+            _cache_last_refresh is not None
+            and (now - _cache_last_refresh).total_seconds() < _CACHE_TTL_SECONDS
+        ):
+            return _cached_topics
+
+        try:
+            pool = get_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT id, topic_name, keywords, alert_urgency_threshold, active
+                    FROM topics
+                    WHERE active = true
+                    """
+                )
+            _cached_topics = [dict(row) for row in rows]
+            _cache_last_refresh = now
+        except Exception as exc:
+            print(f"Topic cache refresh failed: {exc}")
+            # Return stale cache if available
+            if not _cached_topics:
+                _cached_topics = []
+
+    return _cached_topics
+
+
+def invalidate_topic_cache() -> None:
+    """Call after topic CRUD operations to force cache refresh on next check."""
+    global _cache_last_refresh
+    _cache_last_refresh = None
+
+
+def _cleanup_instant_dedup(now: datetime) -> None:
+    """Remove expired instant alert dedup entries."""
+    expired = [
+        key
+        for key, sent_at in _instant_alert_sent.items()
+        if now - sent_at > _INSTANT_ALERT_COOLDOWN
+    ]
+    for key in expired:
+        _instant_alert_sent.pop(key, None)
+
+
+# ---------------------------------------------------------------------------
+# Instant keyword alert — fires BEFORE pipeline processing
+# ---------------------------------------------------------------------------
+
+async def instant_keyword_alert(raw_text: str, content_hash: str) -> list[str]:
+    """Check raw text against ALL active topic keywords instantly.
+
+    Called from enqueue_news() BEFORE the message enters the processing queue.
+    Pure regex matching — no LLM, no DB query for the match itself.
+    Returns list of matched topic names.
+    """
+    topics = await get_cached_active_topics()
+    if not topics:
+        return []
+
+    now = datetime.now(timezone.utc)
+    _cleanup_instant_dedup(now)
+
+    matched_topic_names: list[str] = []
+
+    for topic in topics:
+        topic_id = topic["id"]
+        keywords = topic.get("keywords") or []
+
+        # Check dedup: don't re-alert same topic+message within cooldown
+        dedup_key = (topic_id, content_hash)
+        if dedup_key in _instant_alert_sent:
+            continue
+
+        hits = _find_keyword_hits(raw_text, keywords)
+        if not hits:
+            continue
+
+        matched_topic_names.append(topic["topic_name"])
+        _instant_alert_sent[dedup_key] = now
+
+        # Fire the alert immediately
+        message = (
+            f"<b>⚡ INSTANT ALERT</b>\n"
+            f"<b>Topic:</b> {escape(str(topic['topic_name']))}\n"
+            f"<b>Matched Keywords:</b> {escape(', '.join(hits[:6]))}\n"
+            f"<b>Message:</b>\n"
+            f"{_clip_text(raw_text, max_chars=600)}"
+        )
+
+        try:
+            delivered = await send_alert_message(message, parse_mode="HTML")
+            if delivered:
+                # Log to alert_log (fire-and-forget, don't block)
+                asyncio.create_task(
+                    _log_instant_alert(topic_id, content_hash, message)
+                )
+        except Exception as exc:
+            print(f"Instant alert delivery failed for topic {topic_id}: {exc}")
+
+    return matched_topic_names
+
+
+async def _log_instant_alert(
+    topic_id: int,
+    content_hash: str,
+    message_text: str,
+) -> None:
+    """Log instant alert to alert_log. Best-effort, non-blocking."""
+    try:
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            # Try to find the news_id by content_hash (might not exist yet)
+            news_id = await conn.fetchval(
+                "SELECT id FROM news WHERE content_hash = $1",
+                content_hash,
+            )
+            await conn.execute(
+                """
+                INSERT INTO alert_log(news_id, topic_id, channel, message_text)
+                VALUES($1, $2, 'telegram-instant', $3)
+                """,
+                news_id,  # May be None if news not stored yet — that's OK
+                topic_id,
+                message_text,
+            )
+    except Exception as exc:
+        print(f"Instant alert log failed: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Keyword matching helpers (shared by instant + post-DB alerts)
+# ---------------------------------------------------------------------------
+
 def _keyword_pattern(keyword: str) -> str:
     escaped = re.escape(keyword.strip())
     escaped = escaped.replace(r"\ ", r"\s+")
@@ -73,6 +235,10 @@ def _find_keyword_hits(text: str, keywords: Iterable[str]) -> list[str]:
             hits.append(keyword)
     return hits
 
+
+# ---------------------------------------------------------------------------
+# Priority signal detection
+# ---------------------------------------------------------------------------
 
 def _detect_priority_signals(text: str) -> list[str]:
     hits: list[str] = []
@@ -167,18 +333,30 @@ def _bulletize_text(text: str | None, max_points: int = 3) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# Post-DB alert check (runs AFTER news is stored and classified)
+# ---------------------------------------------------------------------------
+
 async def check_and_trigger_alerts(
     news_id: int,
     raw_text: str,
     summary: str | None,
     urgency: str | None,
+    already_alerted_topics: list[str] | None = None,
 ) -> list[str]:
+    """Post-DB alert check with urgency threshold filtering.
+
+    Skips topics that already fired an instant alert for this news item.
+    """
     combined_text = f"{raw_text}\n{summary or ''}"
     normalized_urgency = (urgency or "LOW").upper()
     now = datetime.now(timezone.utc)
     signature = _build_event_signature(combined_text)
     repeated_hits = _record_signal_hit(signature, now)
     priority_signals = _detect_priority_signals(combined_text)
+
+    # Topics already alerted by instant_keyword_alert
+    skip_topics = set(already_alerted_topics or [])
 
     pool = get_pool()
     matched_topic_names: list[str] = []
@@ -226,6 +404,13 @@ async def check_and_trigger_alerts(
         )
 
         for topic in topics:
+            topic_name = topic["topic_name"]
+
+            # Skip if instant alert already fired for this topic
+            if topic_name in skip_topics:
+                matched_topic_names.append(topic_name)
+                continue
+
             topic_threshold = (topic["alert_urgency_threshold"] or "MEDIUM").upper()
             if URGENCY_RANK.get(normalized_urgency, 1) < URGENCY_RANK.get(topic_threshold, 2):
                 continue
@@ -235,7 +420,7 @@ async def check_and_trigger_alerts(
             if not hits:
                 continue
 
-            matched_topic_names.append(topic["topic_name"])
+            matched_topic_names.append(topic_name)
 
             message = (
                 f"<b>Topic:</b> {escape(str(topic['topic_name']))}\n"

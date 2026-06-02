@@ -11,7 +11,7 @@ from typing import Any
 from api.websocket import websocket_manager
 from config import settings
 from database import get_pool
-from processing.alert_engine import check_and_trigger_alerts
+from processing.alert_engine import check_and_trigger_alerts, instant_keyword_alert
 from processing.llm_classifier import classify_news, classify_news_heuristic
 
 
@@ -51,6 +51,17 @@ class NewsPipeline:
         content_hash = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
         payload["content_hash"] = content_hash
 
+        # ========== INSTANT ALERT CHECK (before anything else) ==========
+        # Pure regex/keyword matching — no LLM, no DB query for the match
+        # This fires IMMEDIATELY when the message arrives from Telegram
+        try:
+            instant_matched = await instant_keyword_alert(raw_text, content_hash)
+            if instant_matched:
+                payload["_instant_alerted_topics"] = instant_matched
+        except Exception as exc:
+            print(f"Instant alert check error (non-fatal): {exc}")
+
+        # ========== Normal pipeline continues ==========
         if await self._is_recent_memory_duplicate(payload):
             return
 
@@ -227,11 +238,15 @@ class NewsPipeline:
         if not news_row:
             return
 
+        # Pass instant-alerted topics so check_and_trigger_alerts skips them
+        already_alerted = payload.get("_instant_alerted_topics") or []
+
         matched_topics = await check_and_trigger_alerts(
             news_id=int(news_row["id"]),
             raw_text=news_row["raw_text"],
             summary=news_row["summary"],
             urgency=news_row["urgency"],
+            already_alerted_topics=already_alerted,
         )
 
         payload_json = _record_to_json(dict(news_row))
@@ -258,7 +273,7 @@ class NewsPipeline:
             "urgency": "LOW",
             "sentiment": "neutral",
             "instruments_affected": [],
-            "matched_topics": [],
+            "matched_topics": payload.get("_instant_alerted_topics") or [],
             "llm_processed": False,
             "fetched_at": datetime.now(timezone.utc),
             "published_at": published_at,

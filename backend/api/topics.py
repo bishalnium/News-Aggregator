@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException
 from config import resolve_chat_model
 from database import get_pool
 from models import AlertProposalRequest, AlertProposalResponse, TopicCreate, TopicItem, TopicUpdate
+from processing.alert_engine import invalidate_topic_cache
 from processing.llm_classifier import propose_alert_topic_from_context
 
 
@@ -95,6 +96,7 @@ async def create_topic(payload: TopicCreate) -> dict:
             topic_id,
         )
 
+    invalidate_topic_cache()
     return dict(row)
 
 
@@ -137,6 +139,7 @@ async def update_topic(topic_id: int, payload: TopicUpdate) -> dict:
             topic_id,
         )
 
+    invalidate_topic_cache()
     return dict(row)
 
 
@@ -149,4 +152,5 @@ async def delete_topic(topic_id: int) -> dict:
     if result.endswith("0"):
         raise HTTPException(status_code=404, detail="Topic not found")
 
+    invalidate_topic_cache()
     return {"ok": True, "deleted_topic_id": topic_id}
