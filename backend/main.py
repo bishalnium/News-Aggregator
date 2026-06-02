@@ -10,6 +10,7 @@ from api import alerts, chat, news, settings as settings_api, topics, websocket
 from config import runtime_state, settings
 from database import close_pool, init_pool, init_schema, load_runtime_settings
 from ingestion.telegram_listener import TelegramListener
+from ingestion.twitter_poller import TwitterPoller
 from processing.pipeline import NewsPipeline
 from processing.summarizer import RollingSummarizer
 
@@ -27,18 +28,22 @@ async def lifespan(app: FastAPI):
     await summarizer.start()
 
     telegram_listener = TelegramListener(pipeline.enqueue_news)
+    twitter_poller = TwitterPoller(pipeline.enqueue_news)
 
     telegram_task = asyncio.create_task(telegram_listener.run(), name="telegram-listener")
+    twitter_task = asyncio.create_task(twitter_poller.run(), name="twitter-poller")
 
     app.state.pipeline = pipeline
     app.state.summarizer = summarizer
     app.state.telegram_listener = telegram_listener
-    app.state.background_tasks = [telegram_task]
+    app.state.twitter_poller = twitter_poller
+    app.state.background_tasks = [telegram_task, twitter_task]
 
     print(
         "Backend started. "
         f"Summary interval: {loaded_interval}s | "
-        f"Telegram channels: {settings.telegram_channels}"
+        f"Telegram channels: {settings.telegram_channels} | "
+        f"Twitter handles: {settings.twitter_handles}"
     )
 
     try:

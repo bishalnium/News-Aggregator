@@ -61,6 +61,25 @@ class TopicItem(BaseModel):
     updated_at: datetime
 
 
+class AlertProposalRequest(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    message: str = Field(min_length=3, max_length=1500)
+    model_id: str = "groq_gpt_oss"
+
+
+class AlertProposalResponse(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    topic_name: str
+    keywords: List[str]
+    alert_urgency_threshold: UrgencyType
+    rationale: str = ""
+    context_items: int = 0
+    model_id: str
+    model_label: str
+
+
 class AlertItem(BaseModel):
     id: int
     news_id: int | None = None
@@ -74,13 +93,27 @@ class AlertItem(BaseModel):
 
 
 class ChatRequest(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     message: str = Field(min_length=2, max_length=1500)
+    model_id: str = "groq_gpt_oss"
+
+
+class ChatModelOption(BaseModel):
+    id: str
+    label: str
+    provider: str
+    model: str
 
 
 class ChatResponse(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     answer: str
     used_news_items: int
     window_used: str
+    model_id: str
+    model_label: str
     month_buckets: dict[str, int] = Field(default_factory=dict)
     week_buckets: dict[str, int] = Field(default_factory=dict)
     day_buckets: dict[str, int] = Field(default_factory=dict)

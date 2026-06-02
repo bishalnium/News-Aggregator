@@ -5,6 +5,8 @@ __pycache__/
 .venv/
 venv/
 .env
+.env.oracle
+backend/.env
 
 # Backend runtime artifacts
 news_aggregator_session.session*

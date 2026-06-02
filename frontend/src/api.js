@@ -76,6 +76,13 @@ export function createTopic(payload) {
   });
 }
 
+export function proposeAlertTopic(message, modelId = "groq_gpt_oss") {
+  return request("/topics/ai-proposal", {
+    method: "POST",
+    body: JSON.stringify({ message, model_id: modelId }),
+  });
+}
+
 export function updateTopic(topicId, payload) {
   return request(`/topics/${topicId}`, {
     method: "PUT",
@@ -93,9 +100,13 @@ export function fetchAlerts(limit = 120) {
   return request(`/alerts?limit=${limit}`);
 }
 
-export function askChat(message) {
+export function fetchChatModels() {
+  return request("/chat/models");
+}
+
+export function askChat(message, modelId) {
   return request("/chat", {
     method: "POST",
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, model_id: modelId }),
   });
 }

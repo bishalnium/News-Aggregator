@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
+from config import resolve_chat_model
 from database import get_pool
-from models import TopicCreate, TopicItem, TopicUpdate
+from models import AlertProposalRequest, AlertProposalResponse, TopicCreate, TopicItem, TopicUpdate
+from processing.llm_classifier import propose_alert_topic_from_context
 
 
 router = APIRouter(prefix="/topics", tags=["topics"])
@@ -29,6 +31,40 @@ async def list_topics() -> list[dict]:
             """
         )
     return [dict(row) for row in rows]
+
+
+@router.post("/ai-proposal", response_model=AlertProposalResponse)
+async def propose_alert_topic(payload: AlertProposalRequest) -> AlertProposalResponse:
+    selected_model = resolve_chat_model(payload.model_id)
+
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT fetched_at, source, source_channel, raw_text, summary, urgency, sentiment
+            FROM news
+            ORDER BY fetched_at DESC
+            LIMIT 180
+            """
+        )
+
+    records = [dict(row) for row in rows]
+    proposal = await propose_alert_topic_from_context(
+        payload.message,
+        records,
+        model_provider=selected_model["provider"],
+        model_name=selected_model["model"],
+    )
+
+    return AlertProposalResponse(
+        topic_name=proposal["topic_name"],
+        keywords=proposal["keywords"],
+        alert_urgency_threshold=proposal["alert_urgency_threshold"],
+        rationale=proposal.get("rationale", ""),
+        context_items=len(records),
+        model_id=selected_model["id"],
+        model_label=selected_model["label"],
+    )
 
 
 @router.post("", response_model=TopicItem)

@@ -1,29 +1,71 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
-import { askChat } from "../api";
+import { askChat, fetchChatModels } from "../api";
+
+const FALLBACK_MODELS = [
+  { id: "groq_gpt_oss", label: "Groq GPT-OSS 120B" },
+  { id: "cerebras_glm_4_7", label: "Cerebras GLM 4.7" },
+];
 
 function ChatAssistant() {
   const [question, setQuestion] = useState("");
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [models, setModels] = useState(FALLBACK_MODELS);
+  const [selectedModelId, setSelectedModelId] = useState("groq_gpt_oss");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    fetchChatModels()
+      .then((rows) => {
+        if (cancelled || !Array.isArray(rows) || rows.length === 0) return;
+        setModels(rows);
+        setSelectedModelId((current) => {
+          if (rows.some((item) => item.id === current)) return current;
+          return rows[0].id;
+        });
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setModels(FALLBACK_MODELS);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function handleSubmit(event) {
     event.preventDefault();
     const prompt = question.trim();
     if (!prompt) return;
 
-    setMessages((prev) => [...prev, { role: "user", text: prompt }]);
+    const selectedModel = models.find((item) => item.id === selectedModelId);
+
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: "user",
+        text: prompt,
+        meta: selectedModel ? `Model: ${selectedModel.label}` : "",
+      },
+    ]);
     setQuestion("");
     setLoading(true);
 
     try {
-      const result = await askChat(prompt);
+      const result = await askChat(prompt, selectedModelId);
+      const responseMeta = result.used_news_items > 0
+        ? `Context: ${result.used_news_items} records from ${result.window_used} | ${result.model_label}`
+        : result.model_label;
       setMessages((prev) => [
         ...prev,
         {
           role: "assistant",
           text: result.answer,
-          meta: `Context: ${result.used_news_items} records from ${result.window_used}`,
+          meta: responseMeta,
         },
       ]);
     } catch (err) {
@@ -48,6 +90,21 @@ function ChatAssistant() {
           <p className="muted">
             Ask historical questions like: what happened last week in gold, inflation, or war headlines?
           </p>
+        </div>
+        <div className="chat-model-picker">
+          <label htmlFor="chatModel">Model</label>
+          <select
+            id="chatModel"
+            value={selectedModelId}
+            onChange={(event) => setSelectedModelId(event.target.value)}
+            disabled={loading}
+          >
+            {models.map((model) => (
+              <option key={model.id} value={model.id}>
+                {model.label}
+              </option>
+            ))}
+          </select>
         </div>
       </header>
 

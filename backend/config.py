@@ -17,6 +17,7 @@ ALLOWED_SUMMARY_INTERVALS = {
     300,
     600,
     900,
+    1200,
     1800,
     3600,
     7200,
@@ -51,6 +52,22 @@ def _parse_int(value: str | None, default: int) -> int:
         return default
 
 
+def _parse_float(value: str | None, default: float) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value.strip())
+    except Exception:
+        return default
+
+
+def _parse_provider_order(value: str) -> List[str]:
+    allowed = {"groq", "gemini", "cerebras"}
+    ordered = [item.lower() for item in _parse_csv(value)]
+    filtered = [item for item in ordered if item in allowed]
+    return filtered or ["groq", "gemini", "cerebras"]
+
+
 @dataclass
 class Settings:
     app_name: str
@@ -65,6 +82,8 @@ class Settings:
     telegram_channels: List[str]
     telegram_fast_classification: bool
     fast_summary_mode: bool
+    news_dedupe_window_seconds: int
+    news_dedupe_similarity: float
 
     twitter_username: str
     twitter_email: str
@@ -76,6 +95,7 @@ class Settings:
 
     cerebras_api_key: str
     cerebras_model: str
+    cerebras_chat_model: str
     groq_api_keys: List[str]
     groq_model: str
     groq_base_url: str
@@ -86,6 +106,11 @@ class Settings:
     gemini_fallback_rpm: int
     gemini_requests_per_day: int
     gemini_key_cooldown_seconds: int
+    llm_provider_order: List[str]
+    summary_provider_order: List[str]
+    classification_provider_order: List[str]
+    chat_default_model: str
+    chat_groq_model: str
 
     alert_bot_token: str
     alert_chat_id: str
@@ -121,7 +146,15 @@ class Settings:
             ),
             fast_summary_mode=_parse_bool(
                 os.getenv("FAST_SUMMARY_MODE"),
-                default=True,
+                default=False,
+            ),
+            news_dedupe_window_seconds=max(
+                _parse_int(os.getenv("NEWS_DEDUPE_WINDOW_SECONDS"), 180),
+                30,
+            ),
+            news_dedupe_similarity=min(
+                max(_parse_float(os.getenv("NEWS_DEDUPE_SIMILARITY"), 0.88), 0.5),
+                1.0,
             ),
             twitter_username=os.getenv("TWITTER_USERNAME", ""),
             twitter_email=os.getenv("TWITTER_EMAIL", ""),
@@ -138,10 +171,11 @@ class Settings:
             cerebras_model=os.getenv(
                 "CEREBRAS_MODEL", "qwen-3-235b-a22b-instruct-2507"
             ),
+            cerebras_chat_model=os.getenv("CEREBRAS_CHAT_MODEL", "zai-glm-4.7"),
             groq_api_keys=_parse_csv(
                 os.getenv("GROQ_API_KEYS", os.getenv("GROQ_API_KEY", ""))
             ),
-            groq_model=os.getenv("GROQ_MODEL", "llama-3.1-8b-instant"),
+            groq_model=os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"),
             groq_base_url=os.getenv(
                 "GROQ_BASE_URL", "https://api.groq.com/openai/v1"
             ),
@@ -152,6 +186,23 @@ class Settings:
             gemini_fallback_rpm=_parse_int(os.getenv("GEMINI_FALLBACK_RPM"), 15),
             gemini_requests_per_day=_parse_int(os.getenv("GEMINI_REQUESTS_PER_DAY"), 1500),
             gemini_key_cooldown_seconds=_parse_int(os.getenv("GEMINI_KEY_COOLDOWN_SECONDS"), 90),
+            llm_provider_order=_parse_provider_order(
+                os.getenv("LLM_PROVIDER_ORDER", "groq,gemini,cerebras")
+            ),
+            summary_provider_order=_parse_provider_order(
+                os.getenv(
+                    "SUMMARY_PROVIDER_ORDER",
+                    os.getenv("LLM_PROVIDER_ORDER", "groq,gemini,cerebras"),
+                )
+            ),
+            classification_provider_order=_parse_provider_order(
+                os.getenv(
+                    "CLASSIFICATION_PROVIDER_ORDER",
+                    os.getenv("LLM_PROVIDER_ORDER", "groq,gemini,cerebras"),
+                )
+            ),
+            chat_default_model=os.getenv("CHAT_DEFAULT_MODEL", "groq_gpt_oss"),
+            chat_groq_model=os.getenv("CHAT_GROQ_MODEL", "openai/gpt-oss-120b"),
             alert_bot_token=os.getenv("ALERT_BOT_TOKEN", ""),
             alert_chat_id=os.getenv("ALERT_CHAT_ID", ""),
             summary_bot_token=os.getenv("SUMMARY_BOT_TOKEN", ""),
@@ -193,3 +244,29 @@ class RuntimeState:
 
 settings = Settings.from_env()
 runtime_state = RuntimeState(settings.startup_summary_interval_seconds)
+
+
+def chat_model_options() -> list[dict[str, str]]:
+    return [
+        {
+            "id": "groq_gpt_oss",
+            "label": "Groq GPT-OSS 120B",
+            "provider": "groq",
+            "model": settings.chat_groq_model,
+        },
+        {
+            "id": "cerebras_glm_4_7",
+            "label": "Cerebras GLM 4.7",
+            "provider": "cerebras",
+            "model": settings.cerebras_chat_model,
+        },
+    ]
+
+
+def resolve_chat_model(model_id: str | None) -> dict[str, str]:
+    options = chat_model_options()
+    requested = (model_id or settings.chat_default_model).strip()
+    for option in options:
+        if option["id"] == requested:
+            return option
+    return options[0]

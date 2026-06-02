@@ -1,0 +1,11 @@
+.git
+.gitignore
+.vscode
+.venv
+**/__pycache__
+**/*.pyc
+backend/.env
+backend/data/
+frontend/node_modules/
+frontend/dist/
+news_aggregator_session.session*

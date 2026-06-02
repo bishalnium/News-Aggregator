@@ -18,11 +18,11 @@ _SIGNAL_REPEAT_ALERT_COOLDOWN = timedelta(minutes=20)
 _SIGNAL_SYMBOL_ALERT_COOLDOWN = timedelta(minutes=2)
 
 _SIGNAL_SYMBOLS: tuple[tuple[str, str], ...] = (
-    ("🔴", "red-dot symbol"),
-    ("🚨", "siren symbol"),
-    ("🛑", "stop-alert symbol"),
-    ("❗", "high-priority mark"),
-    ("‼", "double-emphasis mark"),
+    ("\U0001F534", "red-dot symbol"),
+    ("\U0001F6A8", "siren symbol"),
+    ("\U0001F6D1", "stop-alert symbol"),
+    ("\u2757", "high-priority mark"),
+    ("\u203c", "double-emphasis mark"),
 )
 _SIGNAL_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"\bred\s*alert\b", "red alert phrase"),
@@ -150,7 +150,7 @@ def _clip_text(text: str | None, max_chars: int = 700) -> str:
 def _bulletize_text(text: str | None, max_points: int = 3) -> str:
     compact = _clip_text(text, max_chars=900)
     if not compact:
-        return "• No summary available"
+        return "1. No summary available"
 
     sentences = [
         part.strip(" -\n\t")
@@ -159,7 +159,12 @@ def _bulletize_text(text: str | None, max_points: int = 3) -> str:
     ]
 
     points = sentences[:max_points] if sentences else [compact]
-    return "\n".join([f"• {escape(point)}" for point in points])
+    return "\n".join(
+        [
+            f"{index}. {escape(point)}"
+            for index, point in enumerate(points, start=1)
+        ]
+    )
 
 
 async def check_and_trigger_alerts(
@@ -240,17 +245,19 @@ async def check_and_trigger_alerts(
                 f"{_bulletize_text(summary or raw_text, max_points=3)}"
             )
 
-            await send_alert_message(message, parse_mode="HTML")
-
-            await conn.execute(
-                """
-                INSERT INTO alert_log(news_id, topic_id, channel, message_text)
-                VALUES($1, $2, 'telegram-alert', $3)
-                """,
-                news_id,
-                topic["id"],
-                message,
-            )
+            delivered = await send_alert_message(message, parse_mode="HTML")
+            if delivered:
+                await conn.execute(
+                    """
+                    INSERT INTO alert_log(news_id, topic_id, channel, message_text)
+                    VALUES($1, $2, 'telegram-alert', $3)
+                    """,
+                    news_id,
+                    topic["id"],
+                    message,
+                )
+            else:
+                print(f"Alert delivery failed for topic {topic['id']}")
 
         if matched_topic_names:
             await conn.execute(

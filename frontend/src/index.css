@@ -483,6 +483,46 @@ button:hover {
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
 }
 
+.watchlist-editor-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.ai-topic-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ai-topic-panel textarea {
+  min-height: 112px;
+}
+
+.ai-proposal-card {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px;
+  background: var(--surface);
+}
+
+.ai-proposal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-confirm-question {
+  margin: 10px 0 0;
+  font-weight: 700;
+}
+
+.topic-keywords {
+  overflow-wrap: anywhere;
+}
+
 .topic-form {
   display: flex;
   flex-direction: column;
@@ -591,6 +631,23 @@ th {
   gap: 12px;
 }
 
+.chat-model-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 260px;
+}
+
+.chat-model-picker label {
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.chat-model-picker select {
+  flex: 1;
+}
+
 .chat-bubble {
   border-radius: 12px;
   padding: 10px;
@@ -658,6 +715,10 @@ th {
 
   .chat-input-wrap {
     grid-template-columns: 1fr;
+  }
+
+  .chat-model-picker {
+    width: 100%;
   }
 
   .topic-form-footer {

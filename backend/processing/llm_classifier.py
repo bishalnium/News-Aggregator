@@ -27,7 +27,7 @@ _client_import_error_logged = False
 _gemini_import_error_logged = False
 _DEFAULT_TOP_P = 0.8
 _groq_active_key_index = 0
-_groq_exhausted_keys: set[int] = set()
+_groq_key_cooldown_until: dict[int, datetime] = {}
 _gemini_key_cooldown_until: dict[int, datetime] = {}
 _gemini_minute_usage: dict[tuple[int, str, datetime], int] = {}
 _gemini_day_usage: dict[tuple[int, str, date], int] = {}
@@ -100,12 +100,16 @@ def _gemini_models_with_limits() -> list[tuple[str, int]]:
     return items
 
 
-def _has_llm_provider() -> bool:
-    return (
-        bool(_normalized_gemini_keys())
-        or bool(_normalized_groq_keys())
-        or _get_client() is not None
-    )
+def _has_llm_provider(provider_order: list[str] | None = None) -> bool:
+    order = provider_order or settings.llm_provider_order
+    for provider in order:
+        if provider == "groq" and _normalized_groq_keys():
+            return True
+        if provider == "gemini" and _normalized_gemini_keys():
+            return True
+        if provider == "cerebras" and _get_client() is not None:
+            return True
+    return False
 
 
 def _normalized_groq_keys() -> list[str]:
@@ -126,19 +130,28 @@ def _get_active_groq_key() -> tuple[int, str] | tuple[None, None]:
     if not keys:
         return None, None
 
+    now = datetime.now(timezone.utc)
+    for key_index, cooldown_until in list(_groq_key_cooldown_until.items()):
+        if cooldown_until <= now:
+            _groq_key_cooldown_until.pop(key_index, None)
+
     if _groq_active_key_index >= len(keys):
         _groq_active_key_index = 0
 
-    if _groq_active_key_index not in _groq_exhausted_keys:
+    if _groq_active_key_index not in _groq_key_cooldown_until:
         return _groq_active_key_index, keys[_groq_active_key_index]
 
     for index, key in enumerate(keys):
-        if index not in _groq_exhausted_keys:
+        if index not in _groq_key_cooldown_until:
             _groq_active_key_index = index
             return index, key
 
-    # If all keys are exhausted, keep using the active one and rely on provider reset.
-    return _groq_active_key_index, keys[_groq_active_key_index]
+    soonest_index = min(
+        _groq_key_cooldown_until,
+        key=lambda idx: _groq_key_cooldown_until[idx],
+    )
+    _groq_active_key_index = soonest_index
+    return soonest_index, keys[soonest_index]
 
 
 def _mark_groq_key_exhausted(exhausted_index: int, reason: str) -> None:
@@ -148,11 +161,18 @@ def _mark_groq_key_exhausted(exhausted_index: int, reason: str) -> None:
     if not keys:
         return
 
-    _groq_exhausted_keys.add(exhausted_index)
+    lowered = reason.lower()
+    cooldown_seconds = 3600
+    if "invalid" in lowered or "revoked" in lowered or "deactivated" in lowered:
+        cooldown_seconds = 6 * 3600
+
+    _groq_key_cooldown_until[exhausted_index] = datetime.now(timezone.utc) + timedelta(
+        seconds=cooldown_seconds
+    )
 
     for offset in range(1, len(keys) + 1):
         next_index = (exhausted_index + offset) % len(keys)
-        if next_index not in _groq_exhausted_keys:
+        if next_index not in _groq_key_cooldown_until:
             _groq_active_key_index = next_index
             print(
                 "Groq key switched to next configured key "
@@ -161,8 +181,8 @@ def _mark_groq_key_exhausted(exhausted_index: int, reason: str) -> None:
             return
 
     print(
-        "All configured Groq keys look exhausted or invalid. "
-        "Continuing with fallback behavior until quota resets."
+        "All configured Groq keys are cooling down. "
+        "Continuing with the least recently blocked key until quota resets."
     )
 
 
@@ -483,6 +503,7 @@ async def _create_gemini_completion_async(
     *,
     max_completion_tokens: int,
     temperature: float,
+    model_name: str | None = None,
 ) -> dict[str, Any] | None:
     keys = _normalized_gemini_keys()
     if not keys:
@@ -496,7 +517,10 @@ async def _create_gemini_completion_async(
     if not prompt:
         return None
 
-    model_limits = _gemini_models_with_limits()
+    if model_name:
+        model_limits = [(model_name, max(settings.gemini_primary_rpm, 1))]
+    else:
+        model_limits = _gemini_models_with_limits()
     if not model_limits:
         return None
 
@@ -559,6 +583,7 @@ def _create_completion_sync(
     *,
     max_completion_tokens: int,
     temperature: float,
+    model_name: str | None = None,
 ) -> Any | None:
     client = _get_client()
     if client is None:
@@ -566,7 +591,7 @@ def _create_completion_sync(
 
     return client.chat.completions.create(
         messages=messages,
-        model=settings.cerebras_model,
+        model=model_name or settings.cerebras_model,
         max_completion_tokens=max_completion_tokens,
         temperature=temperature,
         top_p=_DEFAULT_TOP_P,
@@ -579,6 +604,7 @@ async def _create_groq_completion_async(
     *,
     max_completion_tokens: int,
     temperature: float,
+    model_name: str | None = None,
 ) -> dict[str, Any] | None:
     keys = _normalized_groq_keys()
     if not keys:
@@ -592,8 +618,9 @@ async def _create_groq_completion_async(
             return None
 
         url = settings.groq_base_url.rstrip("/") + "/chat/completions"
+        resolved_model_name = model_name or settings.groq_model
         payload = {
-            "model": settings.groq_model,
+            "model": resolved_model_name,
             "messages": messages,
             "temperature": temperature,
             "top_p": _DEFAULT_TOP_P,
@@ -624,6 +651,13 @@ async def _create_groq_completion_async(
             body = response.json()
             if not isinstance(body, dict):
                 raise _GroqRequestError(response.status_code, "Unexpected Groq response shape")
+
+            await _record_llm_usage(
+                provider="groq",
+                model_name=resolved_model_name,
+                api_key_label=f"groq-key-{key_index + 1}",
+                now=datetime.now(timezone.utc),
+            )
             return body
 
         except _GroqRequestError as exc:
@@ -662,53 +696,83 @@ async def _create_completion_async(
     *,
     max_completion_tokens: int,
     temperature: float,
+    provider_order: list[str] | None = None,
+    model_provider: str | None = None,
+    model_name: str | None = None,
 ) -> Any | None:
-    if _normalized_gemini_keys():
-        try:
-            gemini_response = await _create_gemini_completion_async(
-                messages,
-                max_completion_tokens=max_completion_tokens,
-                temperature=temperature,
-            )
-            if gemini_response is not None:
-                return gemini_response
-        except Exception as exc:
-            print(f"Gemini completion error: {exc}")
+    if model_provider:
+        ordered_providers = [model_provider.lower()]
+    else:
+        ordered_providers = provider_order or settings.llm_provider_order
 
-    if _normalized_groq_keys():
-        try:
-            groq_response = await _create_groq_completion_async(
-                messages,
-                max_completion_tokens=max_completion_tokens,
-                temperature=temperature,
-            )
-            if groq_response is not None:
-                return groq_response
-        except Exception as exc:
-            print(f"Groq completion error: {exc}")
+    for provider in ordered_providers:
+        if provider == "groq":
+            if not _normalized_groq_keys():
+                continue
+            try:
+                groq_response = await _create_groq_completion_async(
+                    messages,
+                    max_completion_tokens=max_completion_tokens,
+                    temperature=temperature,
+                    model_name=model_name if model_provider == "groq" else None,
+                )
+                if groq_response is not None:
+                    return groq_response
+            except Exception as exc:
+                print(f"Groq completion error: {exc}")
+                continue
 
-    max_attempts = 4
-    for attempt in range(1, max_attempts + 1):
-        try:
-            return await asyncio.to_thread(
-                _create_completion_sync,
-                messages,
-                max_completion_tokens=max_completion_tokens,
-                temperature=temperature,
-            )
-        except Exception as exc:
-            if attempt >= max_attempts or not _is_retryable_cerebras_error(exc):
-                raise
+        if provider == "gemini":
+            if not _normalized_gemini_keys():
+                continue
+            try:
+                gemini_response = await _create_gemini_completion_async(
+                    messages,
+                    max_completion_tokens=max_completion_tokens,
+                    temperature=temperature,
+                    model_name=model_name if model_provider == "gemini" else None,
+                )
+                if gemini_response is not None:
+                    return gemini_response
+            except Exception as exc:
+                print(f"Gemini completion error: {exc}")
+                continue
 
-            backoff_seconds = min(8, 2 ** (attempt - 1))
-            print(
-                f"Cerebras request retry {attempt}/{max_attempts} after "
-                f"{backoff_seconds}s due to transient error: {exc}"
-            )
-            await asyncio.sleep(backoff_seconds)
+        if provider == "cerebras":
+            if _get_client() is None:
+                continue
+            resolved_model_name = model_name if model_provider == "cerebras" else None
+            max_attempts = 4
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    response = await asyncio.to_thread(
+                        _create_completion_sync,
+                        messages,
+                        max_completion_tokens=max_completion_tokens,
+                        temperature=temperature,
+                        model_name=resolved_model_name,
+                    )
+                    if response is not None:
+                        await _record_llm_usage(
+                            provider="cerebras",
+                            model_name=resolved_model_name or settings.cerebras_model,
+                            api_key_label="cerebras-key-1",
+                            now=datetime.now(timezone.utc),
+                        )
+                    return response
+                except Exception as exc:
+                    if attempt >= max_attempts or not _is_retryable_cerebras_error(exc):
+                        print(f"Cerebras completion error: {exc}")
+                        break
+
+                    backoff_seconds = min(8, 2 ** (attempt - 1))
+                    print(
+                        f"Cerebras request retry {attempt}/{max_attempts} after "
+                        f"{backoff_seconds}s due to transient error: {exc}"
+                    )
+                    await asyncio.sleep(backoff_seconds)
 
     return None
-
 
 def _is_retryable_cerebras_error(exc: Exception) -> bool:
     text = str(exc).lower()
@@ -750,8 +814,7 @@ def _strip_visual_ellipsis(text: str) -> str:
 
 def _summary_line_from_row(row: dict[str, Any]) -> str:
     value = row.get("summary") or row.get("raw_text") or ""
-    value = _strip_visual_ellipsis(str(value))
-    return f"- {value}" if value else ""
+    return _strip_visual_ellipsis(str(value)) if value else ""
 
 
 def _build_fallback_window_summary(news_rows: list[dict[str, Any]]) -> str:
@@ -759,7 +822,231 @@ def _build_fallback_window_summary(news_rows: list[dict[str, Any]]) -> str:
     lines = [line for line in lines if line]
     if not lines:
         return "No major updates in this time window."
-    return "Latest updates:\n" + "\n".join(lines)
+    numbered = [f"{index}. {line}" for index, line in enumerate(lines, start=1)]
+    return "Latest updates:\n" + "\n".join(numbered)
+
+
+_ALERT_KEYWORD_STOPWORDS = {
+    "alert",
+    "about",
+    "and",
+    "alerts",
+    "allotron",
+    "based",
+    "bot",
+    "chatbot",
+    "context",
+    "create",
+    "draft",
+    "for",
+    "from",
+    "high",
+    "keep",
+    "keyword",
+    "keywords",
+    "low",
+    "medium",
+    "minimum",
+    "need",
+    "notification",
+    "notifications",
+    "okay",
+    "on",
+    "or",
+    "set",
+    "setup",
+    "should",
+    "the",
+    "this",
+    "topic",
+    "to",
+    "urgency",
+    "with",
+}
+
+
+def _normalize_alert_urgency(value: Any, source_text: str = "") -> str:
+    candidate = str(value or "").strip().upper()
+    if candidate in {"HIGH", "MEDIUM", "LOW"}:
+        return candidate
+
+    lowered = source_text.lower()
+    if re.search(r"\b(high|urgent|breaking|critical|red alert)\b", lowered):
+        return "HIGH"
+    if re.search(r"\b(low|watch only|FYI|fyi)\b", lowered):
+        return "LOW"
+    return "MEDIUM"
+
+
+def _clean_alert_keyword(value: Any) -> str:
+    keyword = re.sub(r"\s+", " ", str(value or "")).strip(" \t\n\r,.;:-")
+    if not keyword:
+        return ""
+
+    normalized = keyword.lower().strip("#$")
+    if len(normalized) < 2 or normalized in _ALERT_KEYWORD_STOPWORDS:
+        return ""
+
+    # Keep phrase keywords short enough for reliable regex matching later.
+    return keyword[:80]
+
+
+def _keyword_candidates_from_text(text: str, max_keywords: int = 10) -> list[str]:
+    candidates: list[str] = []
+
+    quoted_phrases = re.findall(r"[\"']([^\"']{2,80})[\"']", text or "")
+    candidates.extend(quoted_phrases)
+
+    cleaned = re.sub(r"https?://\S+", " ", text or "")
+    tokens = re.findall(r"[$#]?[A-Za-z][A-Za-z0-9&.-]{2,}", cleaned)
+    candidates.extend(tokens)
+
+    unique: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        keyword = _clean_alert_keyword(candidate)
+        key = keyword.lower()
+        if not keyword or key in seen:
+            continue
+        seen.add(key)
+        unique.append(keyword)
+        if len(unique) >= max_keywords:
+            break
+
+    return unique
+
+
+def _fallback_alert_proposal(instruction: str) -> dict[str, Any]:
+    keywords = _keyword_candidates_from_text(instruction, max_keywords=8)
+    if not keywords:
+        keywords = ["breaking news"]
+
+    topic_words = keywords[:4]
+    topic_name = " ".join(topic_words).strip()
+    if topic_name:
+        topic_name = topic_name[:80].title()
+    else:
+        topic_name = "Custom News Alert"
+
+    return {
+        "topic_name": topic_name,
+        "keywords": keywords,
+        "alert_urgency_threshold": _normalize_alert_urgency(None, instruction),
+        "rationale": "Drafted locally from the alert request because an LLM response was unavailable.",
+    }
+
+
+def _normalize_alert_proposal(
+    proposal: dict[str, Any] | None,
+    instruction: str,
+) -> dict[str, Any]:
+    fallback = _fallback_alert_proposal(instruction)
+    if not isinstance(proposal, dict):
+        return fallback
+
+    topic_name = re.sub(r"\s+", " ", str(proposal.get("topic_name") or "")).strip()
+    if len(topic_name) < 2:
+        topic_name = fallback["topic_name"]
+    topic_name = topic_name[:200]
+
+    raw_keywords = proposal.get("keywords")
+    if isinstance(raw_keywords, str):
+        keyword_inputs: list[Any] = re.split(r"[,\n]", raw_keywords)
+    elif isinstance(raw_keywords, list):
+        keyword_inputs = raw_keywords
+    else:
+        keyword_inputs = []
+
+    keywords: list[str] = []
+    seen: set[str] = set()
+    for raw_keyword in keyword_inputs:
+        keyword = _clean_alert_keyword(raw_keyword)
+        key = keyword.lower()
+        if not keyword or key in seen:
+            continue
+        seen.add(key)
+        keywords.append(keyword)
+        if len(keywords) >= 10:
+            break
+
+    if not keywords:
+        keywords = fallback["keywords"]
+
+    rationale = re.sub(r"\s+", " ", str(proposal.get("rationale") or "")).strip()
+    if not rationale:
+        rationale = fallback["rationale"]
+
+    return {
+        "topic_name": topic_name,
+        "keywords": keywords,
+        "alert_urgency_threshold": _normalize_alert_urgency(
+            proposal.get("alert_urgency_threshold"),
+            instruction,
+        ),
+        "rationale": rationale[:280],
+    }
+
+
+async def propose_alert_topic_from_context(
+    instruction: str,
+    news_rows: list[dict[str, Any]],
+    *,
+    model_provider: str | None = None,
+    model_name: str | None = None,
+) -> dict[str, Any]:
+    fallback = _fallback_alert_proposal(instruction)
+    provider_order = [model_provider] if model_provider else settings.llm_provider_order
+    if not _has_llm_provider(provider_order):
+        return fallback
+
+    context_lines: list[str] = []
+    for row in news_rows[:120]:
+        fetched_at = row.get("fetched_at")
+        if isinstance(fetched_at, datetime):
+            ts = fetched_at.isoformat()
+        else:
+            ts = str(fetched_at)
+        text = _strip_visual_ellipsis(str(row.get("raw_text") or row.get("summary") or ""))
+        if text:
+            context_lines.append(
+                f"[{ts}] {row.get('source_channel') or row.get('source')}: {text[:500]}"
+            )
+
+    system_prompt = """You draft backend alert-topic configurations for a Telegram news monitor.
+Return ONLY JSON with fields:
+topic_name, keywords, alert_urgency_threshold, rationale.
+Allowed alert_urgency_threshold values: HIGH, MEDIUM, LOW.
+Choose 4 to 10 short keywords or phrases that are likely to appear in incoming news messages.
+Use the user's request first, then use the supplied recent context to add useful aliases or related terms.
+Do not save the topic. Do not ask a follow-up question. The UI will ask for confirmation.
+"""
+
+    user_prompt = (
+        f"User alert request:\n{instruction}\n\n"
+        "Recent stored news context:\n"
+        + ("\n".join(context_lines) if context_lines else "No stored news context available.")
+    )
+
+    try:
+        response = await _create_completion_async(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt[:14000]},
+            ],
+            temperature=0.1,
+            max_completion_tokens=700,
+            model_provider=model_provider,
+            model_name=model_name,
+        )
+        if response is None:
+            return fallback
+
+        content = _extract_response_text(response)
+        result = _extract_json_payload(content)
+        return _normalize_alert_proposal(result, instruction)
+    except Exception as exc:
+        print(f"LLM alert proposal error: {exc}")
+        return fallback
 
 
 def _strip_source_prefixes(text: str) -> str:
@@ -836,6 +1123,7 @@ Return full summary text without truncating content.
             ],
             temperature=0.1,
             max_completion_tokens=700,
+            provider_order=settings.classification_provider_order,
         )
         if response is None:
             return _heuristic_classification(raw_text)
@@ -870,7 +1158,7 @@ async def summarize_news_window(news_rows: list[dict[str, Any]], window_seconds:
     if not news_rows:
         return "No major updates in this time window."
 
-    if settings.fast_summary_mode or not _has_llm_provider():
+    if settings.fast_summary_mode or not _has_llm_provider(settings.summary_provider_order):
         return _build_fallback_window_summary(news_rows)
 
     digest_input = []
@@ -886,8 +1174,8 @@ async def summarize_news_window(news_rows: list[dict[str, Any]], window_seconds:
 
     system_prompt = (
         "You summarize a stream of market news. Return plain text only. "
-        "Give one headline sentence and up to 5 bullet points. "
-        "Mention notable risks and instruments if present."
+        "Return a numbered list using 1., 2., 3. and never use asterisks or bullet glyphs. "
+        "Include up to 6 concise points and mention notable risks and instruments if present."
     )
 
     user_prompt = (
@@ -905,6 +1193,7 @@ async def summarize_news_window(news_rows: list[dict[str, Any]], window_seconds:
             ],
             temperature=0.2,
             max_completion_tokens=1200,
+            provider_order=settings.summary_provider_order,
         )
         if response is None:
             return _build_fallback_window_summary(news_rows)
@@ -922,6 +1211,8 @@ async def answer_with_news_context(
     news_rows: list[dict[str, Any]],
     *,
     time_bucket_digest: str = "",
+    model_provider: str | None = None,
+    model_name: str | None = None,
 ) -> str:
     if not news_rows:
         return "I could not find matching news in the selected time range."
@@ -932,7 +1223,8 @@ async def answer_with_news_context(
             f"[{row.get('fetched_at')}] {row.get('source')} / {row.get('source_channel')}: {row.get('raw_text')}"
         )
 
-    if not _has_llm_provider():
+    provider_order = [model_provider] if model_provider else settings.llm_provider_order
+    if not _has_llm_provider(provider_order):
         return (
             "Local fallback answer: I found "
             f"{len(news_rows)} relevant updates. Latest item: "
@@ -959,6 +1251,8 @@ async def answer_with_news_context(
             ],
             temperature=0.2,
             max_completion_tokens=1200,
+            model_provider=model_provider,
+            model_name=model_name,
         )
         if response is None:
             return (

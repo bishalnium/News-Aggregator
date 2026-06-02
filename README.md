@@ -14,7 +14,7 @@ A full-stack, low-latency market news aggregator built from scratch for your fin
 - FastAPI + aiomysql + MySQL
 - Telethon listener for Telegram channels
 - Twikit poller for Twitter/X handles
-- AI classification and digest generation via Groq or Cerebras-compatible endpoint
+- AI classification and digest generation via configurable Groq, Gemini, or Cerebras provider order
 - NLP keyword alert matching (regex word-boundary style)
 - WebSocket push for real-time frontend updates
 
@@ -85,27 +85,90 @@ Open http://localhost:5173.
 - Telegram ingest requires TELEGRAM_API_ID and TELEGRAM_API_HASH from my.telegram.org.
 - Telethon uses your account session. First run may prompt OTP in terminal.
 - Twitter poller uses Twikit cookie auth. First run creates cookie file.
-- NLP/classification can use Groq by setting GROQ_API_KEYS as a comma-separated list.
-  Keys are used sequentially, and the backend rotates to the next key only when
-  the active key is invalid or quota-exhausted.
+- LLM calls are provider-order driven. Set `LLM_PROVIDER_ORDER`, `SUMMARY_PROVIDER_ORDER`, and `CLASSIFICATION_PROVIDER_ORDER` to prioritize Groq/Gemini/Cerebras without code changes.
+- Groq defaults to `openai/gpt-oss-120b`. Set `GROQ_API_KEYS` as a comma-separated list; keys are used sequentially and cooled down/rotated when invalid or quota-exhausted.
+- `FAST_SUMMARY_MODE=false` enables model-generated summaries; leave it true only when you want cheap local fallback summaries.
+- Near-duplicate Telegram/news repeats are filtered by `NEWS_DEDUPE_WINDOW_SECONDS` and `NEWS_DEDUPE_SIMILARITY`.
+- AI chat supports selectable models through `CHAT_GROQ_MODEL` and `CEREBRAS_CHAT_MODEL`.
 - Two bot channels supported:
   - ALERT_BOT_TOKEN + ALERT_CHAT_ID
   - SUMMARY_BOT_TOKEN + SUMMARY_CHAT_ID
 
-## Deployment Notes
+## Oracle Cloud Deployment (OCI VM)
 
-### Backend (Always-On)
-Deploy backend on Oracle VM so ingest keeps running 24/7.
+This repository now includes production deployment assets for Oracle Cloud VMs:
+- `backend/Dockerfile`
+- `docker-compose.oracle.yml`
+- `.env.oracle.example`
+- `deploy/oracle/setup-vm.sh`
+- `deploy/oracle/deploy.sh`
 
-### Frontend
-Deploy frontend on Vercel and set VITE_API_URL to backend public URL.
+### 1) Create Oracle VM
 
-### Free Database Options
-- Oracle MySQL HeatWave Always Free
-- Self-hosted MySQL on Oracle VM
-- Any MySQL-compatible managed service
+- Shape: Ampere A1 or E2 Micro (Always Free eligible)
+- OS: Ubuntu 22.04/24.04
+- Open ingress rules in OCI Security List or NSG:
+  - TCP 22 (SSH)
+  - TCP 8000 (backend API)
+- Do not expose MySQL publicly; the Oracle compose file keeps MySQL on the internal Docker network.
 
-Use one always-on database for historical Q&A continuity.
+### 2) Connect and clone
+
+```bash
+ssh -i <your_key>.pem ubuntu@<your_public_ip>
+git clone https://github.com/GangserX/News-Aggregator.git
+cd News-Aggregator
+```
+
+### 3) Prepare VM runtime
+
+```bash
+chmod +x deploy/oracle/setup-vm.sh deploy/oracle/deploy.sh
+./deploy/oracle/setup-vm.sh
+newgrp docker
+```
+
+### 4) Configure environment files
+
+```bash
+cp .env.oracle.example .env.oracle
+cp backend/.env.example backend/.env
+```
+
+Edit `.env.oracle`:
+- `MYSQL_DATABASE`
+- `MYSQL_USER`
+- `MYSQL_PASSWORD`
+- `MYSQL_ROOT_PASSWORD`
+- `BACKEND_PORT`
+
+Edit `backend/.env`:
+- Telegram credentials and channels
+- Twitter credentials/cookies
+- LLM keys (Gemini/Groq/Cerebras)
+- Keep `DATABASE_URL` as-is; in Oracle compose it is overridden to internal MySQL service DNS.
+
+If any key contains `$`, escape it as `$$` in env files used by Docker Compose to avoid interpolation warnings.
+
+### 5) Deploy services
+
+```bash
+./deploy/oracle/deploy.sh
+```
+
+### 6) Verify health
+
+```bash
+curl http://127.0.0.1:8000/health
+curl http://<your_public_ip>:8000/health
+```
+
+### 7) Update frontend API URL
+
+If frontend is on Vercel, set:
+- `VITE_API_URL=http://<your_public_ip>:8000`
+
+For production-grade HTTPS, place Nginx/Caddy in front of port 8000 and expose only 80/443.
 
 ## Final Scope Mapping
 

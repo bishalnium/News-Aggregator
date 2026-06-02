@@ -6,8 +6,9 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter
 
+from config import chat_model_options, resolve_chat_model
 from database import get_pool
-from models import ChatRequest, ChatResponse
+from models import ChatModelOption, ChatRequest, ChatResponse
 from processing.llm_classifier import answer_with_news_context
 
 
@@ -28,6 +29,35 @@ _MONTH_LOOKUP = {
     "november": 11,
     "december": 12,
 }
+
+
+_SMALL_TALK_EXACT_RESPONSES = {
+    "hi": "Hi. Ask me anything about the stored news and I will use the database context when it is actually a news question.",
+    "hello": "Hello. I am ready for news questions whenever you are.",
+    "hey": "Hey. Send me a market, geopolitical, or headline question and I will check the stored news.",
+    "yo": "Yo. Give me a news question and I will search the stored context.",
+    "thanks": "You are welcome.",
+    "thank you": "You are welcome.",
+}
+
+
+def _small_talk_answer(message: str) -> str | None:
+    compact = re.sub(r"[^a-z0-9\s!?]", " ", message.lower())
+    compact = re.sub(r"\s+", " ", compact).strip(" !?")
+
+    if compact in _SMALL_TALK_EXACT_RESPONSES:
+        return _SMALL_TALK_EXACT_RESPONSES[compact]
+
+    if re.fullmatch(r"(hi|hello|hey|yo) there", compact):
+        return _SMALL_TALK_EXACT_RESPONSES[compact.split()[0]]
+
+    if compact in {"how are you", "how are you doing", "whats up", "what is up"}:
+        return "I am running fine. Ask me a stored-news question and I will use the relevant context instead of guessing."
+
+    if compact in {"help", "what can you do", "who are you"}:
+        return "I answer questions from the stored news feed. Try asking about a topic, timeframe, market, country, company, or conflict."
+
+    return None
 
 
 def _month_start_end(year: int, month: int) -> tuple[datetime, datetime]:
@@ -146,8 +176,24 @@ def _format_bucket_digest(
     )
 
 
+@router.get("/models", response_model=list[ChatModelOption])
+async def list_chat_models() -> list[dict[str, str]]:
+    return chat_model_options()
+
+
 @router.post("", response_model=ChatResponse)
 async def ask_chat(payload: ChatRequest) -> ChatResponse:
+    selected_model = resolve_chat_model(payload.model_id)
+    small_talk = _small_talk_answer(payload.message)
+    if small_talk is not None:
+        return ChatResponse(
+            answer=small_talk,
+            used_news_items=0,
+            window_used="conversation",
+            model_id=selected_model["id"],
+            model_label=selected_model["label"],
+        )
+
     from_time, to_time, window_label = _detect_window_scope(payload.message)
     is_broad_window = (to_time - from_time) >= timedelta(days=21)
     context_limit = 1600 if is_broad_window else 900
@@ -175,12 +221,16 @@ async def ask_chat(payload: ChatRequest) -> ChatResponse:
         payload.message,
         records,
         time_bucket_digest=bucket_digest,
+        model_provider=selected_model["provider"],
+        model_name=selected_model["model"],
     )
 
     return ChatResponse(
         answer=answer,
         used_news_items=len(records),
         window_used=window_label,
+        model_id=selected_model["id"],
+        model_label=selected_model["label"],
         month_buckets=month_buckets,
         week_buckets=week_buckets,
         day_buckets=day_buckets,

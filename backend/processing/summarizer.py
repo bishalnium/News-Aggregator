@@ -181,7 +181,12 @@ def _format_summary_message(batch_payload: dict[str, Any]) -> str:
         f"<b>Items:</b> {item_count}",
         "<b>Key Points:</b>",
     ]
-    lines.extend([f"• {escape(point)}" for point in points])
+    lines.extend(
+        [
+            f"{index}. {escape(point)}"
+            for index, point in enumerate(points, start=1)
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -261,8 +266,12 @@ def _detect_critical_level(summary_text: str, item_count: int) -> tuple[int, str
         "crypto",
     }
 
-    severe_hits = sum(1 for term in severe_terms if term in lowered)
-    elevated_hits = sum(1 for term in elevated_terms if term in lowered)
+    def _contains_term(term: str) -> bool:
+        pattern = rf"\b{re.escape(term)}\b"
+        return re.search(pattern, lowered) is not None
+
+    severe_hits = sum(1 for term in severe_terms if _contains_term(term))
+    elevated_hits = sum(1 for term in elevated_terms if _contains_term(term))
 
     if severe_hits >= 1:
         return 3, "Extreme"

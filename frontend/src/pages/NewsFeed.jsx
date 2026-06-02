@@ -16,6 +16,7 @@ const SUMMARY_INTERVAL_OPTIONS = [
   300,
   600,
   900,
+  1200,
   1800,
   3600,
   7200,
@@ -42,14 +43,39 @@ function cleanSummaryText(value) {
   if (!value) return "";
   return value
     .split("\n")
-    .map((line) => line.replace(/^\s*[-*]\s*(telegram|twitter|source)\s*:\s*/i, "- "))
+    .map((line) => line.replace(/^\s*[-*]\s*(telegram|twitter|source)\s*:\s*/i, ""))
     .filter((line) => !/^\s*sources?\s*:/i.test(line))
     .join("\n")
-    .replace(/\.{3,}|…+/g, " ")
+    .replace(/\.{3,}|\u2026+/g, " ")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/[ \t]{2,}/g, " ")
     .trim();
 }
+
+function formatNumberedSummaryText(value) {
+  const cleaned = cleanSummaryText(value);
+  if (!cleaned) return "";
+
+  const chunks = cleaned
+    .replace(/\r/g, "")
+    .replace(/\s+(?=(?:[-*]|\d+[.)])\s+)/g, "\n")
+    .split(/\n+/)
+    .map((line) => line.replace(/^\s*(?:[-*]|\d+[.)])\s*/, "").trim())
+    .filter((line) => line && !/^(latest updates|key points):?$/i.test(line));
+
+  const uniquePoints = [];
+  const seen = new Set();
+  for (const chunk of chunks) {
+    const key = chunk.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    uniquePoints.push(chunk);
+  }
+
+  if (uniquePoints.length === 0) return cleaned;
+  return uniquePoints.map((point, index) => `${index + 1}. ${point}`).join("\n");
+}
+
 
 function mergeNewsRows(previous, incoming) {
   const incomingId = incoming?.id;
@@ -385,7 +411,7 @@ function NewsFeed() {
                 <p className="summary-time">
                   {prettyDate(batch.window_start)} to {prettyDate(batch.window_end)}
                 </p>
-                <p className="summary-text">{cleanSummaryText(batch.summary_text)}</p>
+                <p className="summary-text">{formatNumberedSummaryText(batch.summary_text)}</p>
               </article>
             ))}
           </div>
