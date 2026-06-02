@@ -255,12 +255,25 @@ def chat_model_options() -> list[dict[str, str]]:
             "model": settings.chat_groq_model,
         },
         {
+            "id": "gemini_flash",
+            "label": "Gemini 2.5 Flash",
+            "provider": "gemini",
+            "model": settings.gemini_fallback_model,
+        },
+        {
+            "id": "gemini_flash_lite",
+            "label": "Gemini 2.5 Flash Lite",
+            "provider": "gemini",
+            "model": settings.gemini_primary_model,
+        },
+        {
             "id": "cerebras_glm_4_7",
             "label": "Cerebras GLM 4.7",
             "provider": "cerebras",
             "model": settings.cerebras_chat_model,
         },
     ]
+
 
 
 def resolve_chat_model(model_id: str | None) -> dict[str, str]:
