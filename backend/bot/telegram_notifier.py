@@ -74,3 +74,9 @@ async def send_summary_message(text: str, parse_mode: str | None = None) -> bool
     token = settings.summary_bot_token or settings.alert_bot_token
     chat_id = settings.summary_chat_id or settings.alert_chat_id
     return await _send_message(token, chat_id, text, parse_mode=parse_mode)
+
+
+async def send_context_alert_message(text: str, parse_mode: str | None = None) -> bool:
+    token = settings.context_bot_token or settings.alert_bot_token
+    chat_id = settings.context_chat_id or settings.alert_chat_id
+    return await _send_message(token, chat_id, text, parse_mode=parse_mode)

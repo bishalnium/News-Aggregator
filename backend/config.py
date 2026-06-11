@@ -130,6 +130,12 @@ class Settings:
     alert_chat_id: str
     summary_bot_token: str
     summary_chat_id: str
+    context_bot_token: str
+    context_chat_id: str
+
+    app_passcode: str
+    groq_context_api_keys: List[str]
+    cerebras_context_api_keys: List[str]
 
     startup_summary_interval_seconds: int
 
@@ -242,6 +248,11 @@ class Settings:
             alert_chat_id=os.getenv("ALERT_CHAT_ID", ""),
             summary_bot_token=os.getenv("SUMMARY_BOT_TOKEN", ""),
             summary_chat_id=os.getenv("SUMMARY_CHAT_ID", ""),
+            context_bot_token=os.getenv("CONTEXT_BOT_TOKEN", ""),
+            context_chat_id=os.getenv("CONTEXT_CHAT_ID", ""),
+            app_passcode=os.getenv("APP_PASSCODE", "7539"),
+            groq_context_api_keys=_parse_csv(os.getenv("GROQ_CONTEXT_API_KEYS", "")),
+            cerebras_context_api_keys=_parse_csv(os.getenv("CEREBRAS_CONTEXT_API_KEYS", "")),
             startup_summary_interval_seconds=startup_interval,
         )
 

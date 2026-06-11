@@ -38,7 +38,14 @@ function NewsCard({ item }) {
     <article className="news-card">
       <header className="news-card-head">
         <span className="news-time-badge">{formatRelativeTime(item.fetched_at)}</span>
-        <span className={urgencyClass(item.urgency)}>
+        <span
+          className={urgencyClass(item.urgency)}
+          title={
+            isProvisional
+              ? "Live incoming news item. AI classification and summary enrichment are in progress."
+              : `Urgency Level: ${item.urgency || "LOW"}. AI-determined level representing expected market impact or geopolitical significance: LOW (routine reports/updates), MEDIUM (market-moving statements/data), HIGH (extreme emergency events/major attacks).`
+          }
+        >
           {isProvisional ? "LIVE" : (item.urgency || "LOW")}
         </span>
       </header>

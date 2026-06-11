@@ -5,9 +5,15 @@ import asyncio
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from bot.telegram_notifier import send_alert_message
-from config import ALLOWED_SUMMARY_INTERVALS, runtime_state
+from config import ALLOWED_SUMMARY_INTERVALS, runtime_state, settings
 from database import get_pool, save_summary_interval
-from models import LlmUsageItem, SummaryBatch, SummaryIntervalRequest, SummaryIntervalResponse
+from models import (
+    LlmUsageItem,
+    SummaryBatch,
+    SummaryIntervalRequest,
+    SummaryIntervalResponse,
+    PasscodeVerifyRequest,
+)
 
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -128,3 +134,10 @@ async def _run_summary_once_now(summarizer, window_seconds: int) -> None:
         await summarizer.run_once(window_seconds=window_seconds)
     except Exception as exc:
         print(f"Immediate summary generation failed: {exc}")
+
+
+@router.post("/verify-passcode")
+async def verify_passcode(payload: PasscodeVerifyRequest) -> dict:
+    if payload.passcode == settings.app_passcode:
+        return {"ok": True}
+    raise HTTPException(status_code=401, detail="Invalid passcode")

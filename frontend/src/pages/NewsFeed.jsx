@@ -77,6 +77,38 @@ function formatNumberedSummaryText(value) {
 }
 
 
+function boldEntities(text) {
+  if (!text) return "";
+  const keywords = [
+    "Iran", "US", "USA", "Russia", "Ukraine", "China", "Israel", "Gaza", "Lebanon", "Taiwan", "Syria", "Iraq", "Yemen", "Saudi Arabia", "Qatar", "Pakistan", "United States",
+    "Fed", "Federal Reserve", "ECB", "European Central Bank", "BOJ", "Bank of Japan", "BOE", "Bank of England", "IMF", "World Bank", "UN", "United Nations", "NATO",
+    "WTI", "Brent", "Gold", "Silver", "Oil", "USD", "EUR", "GBP", "JPY", "CNY", "S&P 500", "Nasdaq-100", "Nasdaq", "Dow Jones", "Dow",
+    "rate hike", "rate hikes", "rate cut", "rate cuts", "ceasefire", "missile", "missiles", "tariff", "tariffs", "sanctions", "nuclear talks", "peace talks", "strike", "strikes", "attack", "attacks", "bomb", "bombs", "bombed", "inflation", "yields", "GDP"
+  ];
+  
+  const pattern = new RegExp(`\\b(${keywords.join("|")})\\b`, "gi");
+  const parts = text.split(pattern);
+  return parts.map((part, index) => {
+    if (index % 2 === 1) {
+      return <strong key={index} className="summary-entity">{part}</strong>;
+    }
+    return part;
+  });
+}
+
+
+function renderSummaryLines(value) {
+  const formatted = formatNumberedSummaryText(value);
+  if (!formatted) return null;
+
+  return formatted.split("\n").map((line, idx) => (
+    <div key={idx} className="summary-line">
+      {boldEntities(line)}
+    </div>
+  ));
+}
+
+
 function mergeNewsRows(previous, incoming) {
   const incomingId = incoming?.id;
   const incomingHash = incoming?.content_hash;
@@ -349,6 +381,19 @@ function NewsFeed() {
             />
           </div>
 
+          <div className="urgency-legend">
+            <span className="urgency-legend-label">Urgency Levels:</span>
+            <span className="urgency-legend-item low" title="Low expected market or geopolitical impact (e.g., routine statements or announcements).">
+              <span className="legend-dot low"></span>LOW
+            </span>
+            <span className="urgency-legend-item medium" title="Medium expected market or geopolitical impact (e.g., major geopolitical tension updates, energy market warnings).">
+              <span className="legend-dot medium"></span>MEDIUM
+            </span>
+            <span className="urgency-legend-item high" title="High expected market or geopolitical impact (e.g., actual strikes/bombing, direct central bank interest rate decisions).">
+              <span className="legend-dot high"></span>HIGH
+            </span>
+          </div>
+
           {loading && <p className="muted">Loading feed...</p>}
           {!loading && filteredNews.length === 0 && (
             <p className="muted">No news received yet for this filter.</p>
@@ -411,7 +456,7 @@ function NewsFeed() {
                 <p className="summary-time">
                   {prettyDate(batch.window_start)} to {prettyDate(batch.window_end)}
                 </p>
-                <p className="summary-text">{formatNumberedSummaryText(batch.summary_text)}</p>
+                <div className="summary-text-container">{renderSummaryLines(batch.summary_text)}</div>
               </article>
             ))}
           </div>

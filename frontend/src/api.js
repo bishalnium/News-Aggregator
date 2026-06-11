@@ -115,3 +115,41 @@ export function askChat(message, modelId) {
     body: JSON.stringify({ message, model_id: modelId }),
   });
 }
+
+export function verifyPasscode(passcode) {
+  return request("/settings/verify-passcode", {
+    method: "POST",
+    body: JSON.stringify({ passcode }),
+  });
+}
+
+export function fetchContextAlerts() {
+  return request("/topics/context");
+}
+
+export function createContextAlert(payload) {
+  return request("/topics/context", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateContextAlert(alertId, payload) {
+  return request(`/topics/context/${alertId}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteContextAlert(alertId) {
+  return request(`/topics/context/${alertId}`, {
+    method: "DELETE",
+  });
+}
+
+export function proposeContextAlert(instruction) {
+  return request("/topics/context/ai-proposal", {
+    method: "POST",
+    body: JSON.stringify({ instruction }),
+  });
+}

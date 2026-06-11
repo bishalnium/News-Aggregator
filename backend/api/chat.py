@@ -100,6 +100,29 @@ def _detect_window_scope(message: str) -> tuple[datetime, datetime, str]:
     if explicit_month:
         return explicit_month
 
+    # Dynamic duration regex: e.g., "last 6 hours", "past 30 minutes", "previous 3 days"
+    num_map = {
+        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+        "eleven": 11, "twelve": 12, "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60
+    }
+    pattern = r"\b(?:last|past|previous)\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twenty|thirty|forty|fifty|sixty)\s+(minute|min|hour|hr|day|week|month|year)s?\b"
+    match = re.search(pattern, lowered)
+    if match:
+        val_str, unit = match.groups()
+        val = int(val_str) if val_str.isdigit() else num_map.get(val_str, 1)
+        if "minute" in unit or "min" in unit:
+            return now - timedelta(minutes=val), now + timedelta(seconds=1), f"last {val} minutes"
+        elif "hour" in unit or "hr" in unit:
+            return now - timedelta(hours=val), now + timedelta(seconds=1), f"last {val} hours"
+        elif "day" in unit:
+            return now - timedelta(days=val), now + timedelta(seconds=1), f"last {val} days"
+        elif "week" in unit:
+            return now - timedelta(weeks=val), now + timedelta(seconds=1), f"last {val} weeks"
+        elif "month" in unit:
+            return now - timedelta(days=val * 30), now + timedelta(seconds=1), f"last {val} months"
+        elif "year" in unit:
+            return now - timedelta(days=val * 365), now + timedelta(seconds=1), f"last {val} years"
+
     if "previous week" in lowered or "last week" in lowered:
         week_start = (now - timedelta(days=now.weekday() + 7)).replace(
             hour=0,
@@ -120,16 +143,17 @@ def _detect_window_scope(message: str) -> tuple[datetime, datetime, str]:
         week_end = now + timedelta(seconds=1)
         return week_start, week_end, "this week"
 
-    if "2 month" in lowered or "two month" in lowered:
-        return now - timedelta(days=60), now + timedelta(seconds=1), "last 2 months"
-    if "month" in lowered:
-        return now - timedelta(days=30), now + timedelta(seconds=1), "last 30 days"
-    if "week" in lowered:
-        return now - timedelta(days=7), now + timedelta(seconds=1), "last 7 days"
     if "yesterday" in lowered:
         return now - timedelta(days=2), now + timedelta(seconds=1), "last 48 hours"
     if "today" in lowered:
         return now - timedelta(days=1), now + timedelta(seconds=1), "last 24 hours"
+    if "latest" in lowered or "recently" in lowered or "recent" in lowered:
+        return now - timedelta(days=1), now + timedelta(seconds=1), "recent events"
+
+    if "month" in lowered:
+        return now - timedelta(days=30), now + timedelta(seconds=1), "last 30 days"
+    if "week" in lowered:
+        return now - timedelta(days=7), now + timedelta(seconds=1), "last 7 days"
 
     return now - timedelta(days=3), now + timedelta(seconds=1), "last 72 hours"
 

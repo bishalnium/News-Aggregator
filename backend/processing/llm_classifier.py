@@ -49,6 +49,20 @@ _gemini_key_cooldown_until: dict[int, datetime] = {}
 _gemini_minute_usage: dict[tuple[int, str, datetime], int] = {}
 _gemini_day_usage: dict[tuple[int, str, date], int] = {}
 
+# Groq Context state
+_groq_context_active_key_index = 0
+_groq_context_key_cooldown_until: dict[int, datetime] = {}
+_groq_context_minute_usage: dict[tuple[int, datetime], int] = {}
+_groq_context_day_usage: dict[tuple[int, date], int] = {}
+
+# Cerebras Context state
+_cerebras_context_active_key_index = 0
+_cerebras_context_key_cooldown_until: dict[int, datetime] = {}
+_cerebras_context_minute_usage: dict[tuple[int, datetime], int] = {}
+_cerebras_context_hour_usage: dict[tuple[int, datetime], int] = {}
+_cerebras_context_day_usage: dict[tuple[int, date], int] = {}
+_cerebras_context_clients: dict[int, Any] = {}
+
 
 # ---------------------------------------------------------------------------
 # Error classes
@@ -116,6 +130,28 @@ def _normalized_gemini_keys() -> list[str]:
 def _normalized_cerebras_keys() -> list[str]:
     normalized: list[str] = []
     for raw_key in settings.cerebras_api_keys:
+        if not raw_key:
+            continue
+        key = raw_key.strip().strip('"').strip("'")
+        if key:
+            normalized.append(key)
+    return normalized
+
+
+def _normalized_groq_context_keys() -> list[str]:
+    normalized: list[str] = []
+    for raw_key in settings.groq_context_api_keys:
+        if not raw_key:
+            continue
+        key = raw_key.strip().strip('"').strip("'")
+        if key:
+            normalized.append(key)
+    return normalized
+
+
+def _normalized_cerebras_context_keys() -> list[str]:
+    normalized: list[str] = []
+    for raw_key in settings.cerebras_context_api_keys:
         if not raw_key:
             continue
         key = raw_key.strip().strip('"').strip("'")
@@ -1646,3 +1682,551 @@ async def answer_with_news_context(
             "I found related records, but the AI response failed right now. "
             "Please try again in a moment."
         )
+
+
+# ===================================================================
+# Context Alerts Pipeline LLM Handlers
+# ===================================================================
+
+def _cleanup_groq_context_state(now: datetime) -> None:
+    stale_minute_cutoff = now - timedelta(minutes=3)
+    for key in list(_groq_context_minute_usage.keys()):
+        if key[1] < stale_minute_cutoff:
+            _groq_context_minute_usage.pop(key, None)
+
+    for key in list(_groq_context_day_usage.keys()):
+        if key[1] < now.date():
+            _groq_context_day_usage.pop(key, None)
+
+    for key_index, cooldown_until in list(_groq_context_key_cooldown_until.items()):
+        if cooldown_until <= now:
+            _groq_context_key_cooldown_until.pop(key_index, None)
+
+
+def _is_groq_context_key_available(key_index: int, now: datetime) -> bool:
+    cooldown_until = _groq_context_key_cooldown_until.get(key_index)
+    if cooldown_until and cooldown_until > now:
+        return False
+
+    minute_bucket = now.replace(second=0, microsecond=0)
+    minute_count = _groq_context_minute_usage.get((key_index, minute_bucket), 0)
+    if minute_count >= max(settings.groq_rpm, 1):
+        return False
+
+    day_bucket = now.date()
+    day_count = _groq_context_day_usage.get((key_index, day_bucket), 0)
+    if day_count >= max(settings.groq_rpd, 1):
+        return False
+
+    return True
+
+
+def _increment_groq_context_usage(key_index: int, now: datetime) -> None:
+    minute_bucket = now.replace(second=0, microsecond=0)
+    day_bucket = now.date()
+
+    minute_key = (key_index, minute_bucket)
+    day_key = (key_index, day_bucket)
+
+    _groq_context_minute_usage[minute_key] = _groq_context_minute_usage.get(minute_key, 0) + 1
+    _groq_context_day_usage[day_key] = _groq_context_day_usage.get(day_key, 0) + 1
+
+
+def _get_active_groq_context_key() -> tuple[int, str] | tuple[None, None]:
+    global _groq_context_active_key_index
+
+    keys = _normalized_groq_context_keys()
+    if not keys:
+        return None, None
+
+    now = datetime.now(timezone.utc)
+    _cleanup_groq_context_state(now)
+
+    if _groq_context_active_key_index >= len(keys):
+        _groq_context_active_key_index = 0
+
+    if _is_groq_context_key_available(_groq_context_active_key_index, now):
+        return _groq_context_active_key_index, keys[_groq_context_active_key_index]
+
+    for index in range(len(keys)):
+        if _is_groq_context_key_available(index, now):
+            _groq_context_active_key_index = index
+            return index, keys[index]
+
+    soonest_index = _groq_context_active_key_index
+    return soonest_index, keys[soonest_index]
+
+
+def _mark_groq_context_key_exhausted(exhausted_index: int, reason: str) -> None:
+    global _groq_context_active_key_index
+
+    keys = _normalized_groq_context_keys()
+    if not keys:
+        return
+
+    lowered = reason.lower()
+    cooldown_seconds = settings.groq_key_cooldown_seconds
+    if "invalid" in lowered or "revoked" in lowered or "deactivated" in lowered:
+        cooldown_seconds = 6 * 3600
+
+    _groq_context_key_cooldown_until[exhausted_index] = datetime.now(timezone.utc) + timedelta(
+        seconds=cooldown_seconds
+    )
+
+    for offset in range(1, len(keys) + 1):
+        next_index = (exhausted_index + offset) % len(keys)
+        if next_index not in _groq_context_key_cooldown_until:
+            _groq_context_active_key_index = next_index
+            print(
+                "Groq context key switched to next configured key "
+                f"(index {next_index + 1}/{len(keys)}) due to: {reason}"
+            )
+            return
+
+    print("All configured Groq context keys are cooling down. Continuing with active key.")
+
+
+def _get_cerebras_context_client(key_index: int) -> Any | None:
+    keys = _normalized_cerebras_context_keys()
+    if not keys or key_index >= len(keys):
+        return None
+    if Cerebras is None:
+        _log_missing_cerebras_once()
+        return None
+    if key_index not in _cerebras_context_clients:
+        _cerebras_context_clients[key_index] = Cerebras(api_key=keys[key_index])
+    return _cerebras_context_clients[key_index]
+
+
+def _cleanup_cerebras_context_state(now: datetime) -> None:
+    stale_minute_cutoff = now - timedelta(minutes=3)
+    for key in list(_cerebras_context_minute_usage.keys()):
+        if key[1] < stale_minute_cutoff:
+            _cerebras_context_minute_usage.pop(key, None)
+
+    stale_hour_cutoff = now - timedelta(hours=2)
+    for key in list(_cerebras_context_hour_usage.keys()):
+        if key[1] < stale_hour_cutoff:
+            _cerebras_context_hour_usage.pop(key, None)
+
+    for key in list(_cerebras_context_day_usage.keys()):
+        if key[1] < now.date():
+            _cerebras_context_day_usage.pop(key, None)
+
+    for key_index, cooldown_until in list(_cerebras_context_key_cooldown_until.items()):
+        if cooldown_until <= now:
+            _cerebras_context_key_cooldown_until.pop(key_index, None)
+
+
+def _is_cerebras_context_key_available(key_index: int, now: datetime) -> bool:
+    cooldown_until = _cerebras_context_key_cooldown_until.get(key_index)
+    if cooldown_until and cooldown_until > now:
+        return False
+
+    minute_bucket = now.replace(second=0, microsecond=0)
+    minute_count = _cerebras_context_minute_usage.get((key_index, minute_bucket), 0)
+    if minute_count >= max(settings.cerebras_rpm, 1):
+        return False
+
+    hour_bucket = now.replace(minute=0, second=0, microsecond=0)
+    hour_count = _cerebras_context_hour_usage.get((key_index, hour_bucket), 0)
+    if hour_count >= max(settings.cerebras_rph, 1):
+        return False
+
+    day_bucket = now.date()
+    day_count = _cerebras_context_day_usage.get((key_index, day_bucket), 0)
+    if day_count >= max(settings.cerebras_rpd, 1):
+        return False
+
+    return True
+
+
+def _increment_cerebras_context_usage(key_index: int, now: datetime) -> None:
+    minute_bucket = now.replace(second=0, microsecond=0)
+    hour_bucket = now.replace(minute=0, second=0, microsecond=0)
+    day_bucket = now.date()
+
+    minute_key = (key_index, minute_bucket)
+    hour_key = (key_index, hour_bucket)
+    day_key = (key_index, day_bucket)
+
+    _cerebras_context_minute_usage[minute_key] = _cerebras_context_minute_usage.get(minute_key, 0) + 1
+    _cerebras_context_hour_usage[hour_key] = _cerebras_context_hour_usage.get(hour_key, 0) + 1
+    _cerebras_context_day_usage[day_key] = _cerebras_context_day_usage.get(day_key, 0) + 1
+
+
+def _get_active_cerebras_context_key() -> tuple[int, str] | tuple[None, None]:
+    global _cerebras_context_active_key_index
+
+    keys = _normalized_cerebras_context_keys()
+    if not keys:
+        return None, None
+
+    now = datetime.now(timezone.utc)
+    _cleanup_cerebras_context_state(now)
+
+    if _cerebras_context_active_key_index >= len(keys):
+        _cerebras_context_active_key_index = 0
+
+    if _is_cerebras_context_key_available(_cerebras_context_active_key_index, now):
+        return _cerebras_context_active_key_index, keys[_cerebras_context_active_key_index]
+
+    for index in range(len(keys)):
+        if _is_cerebras_context_key_available(index, now):
+            _cerebras_context_active_key_index = index
+            return index, keys[index]
+
+    soonest_index = _cerebras_context_active_key_index
+    return soonest_index, keys[soonest_index]
+
+
+def _mark_cerebras_context_key_exhausted(exhausted_index: int, reason: str) -> None:
+    global _cerebras_context_active_key_index
+
+    keys = _normalized_cerebras_context_keys()
+    if not keys:
+        return
+
+    lowered = reason.lower()
+    cooldown_seconds = settings.cerebras_key_cooldown_seconds
+    if "invalid" in lowered or "revoked" in lowered or "deactivated" in lowered:
+        cooldown_seconds = 6 * 3600
+
+    _cerebras_context_key_cooldown_until[exhausted_index] = datetime.now(timezone.utc) + timedelta(
+        seconds=cooldown_seconds
+    )
+
+    _cerebras_context_clients.pop(exhausted_index, None)
+
+    for offset in range(1, len(keys) + 1):
+        next_index = (exhausted_index + offset) % len(keys)
+        if next_index not in _cerebras_context_key_cooldown_until:
+            _cerebras_context_active_key_index = next_index
+            print(
+                "Cerebras context key switched to next configured key "
+                f"(index {next_index + 1}/{len(keys)}) due to: {reason}"
+            )
+            return
+
+    print("All configured Cerebras context keys are cooling down. Continuing with active key.")
+
+
+async def _create_groq_context_completion_async(
+    messages: list[dict[str, str]],
+    *,
+    max_completion_tokens: int,
+    temperature: float,
+    model_name: str | None = None,
+) -> dict[str, Any] | None:
+    keys = _normalized_groq_context_keys()
+    if not keys:
+        keys = _normalized_groq_keys()
+        if not keys:
+            return None
+
+    max_attempts = max(3, len(keys) + 1)
+    for attempt in range(1, max_attempts + 1):
+        if _normalized_groq_context_keys():
+            key_index, api_key = _get_active_groq_context_key()
+            label_prefix = "groq-context-key"
+            exhausted_fn = _mark_groq_context_key_exhausted
+            increment_fn = _increment_groq_context_usage
+        else:
+            key_index, api_key = _get_active_groq_key()
+            label_prefix = "groq-key"
+            exhausted_fn = _mark_groq_key_exhausted
+            increment_fn = _increment_groq_usage
+
+        if api_key is None or key_index is None:
+            return None
+
+        url = settings.groq_base_url.rstrip("/") + "/chat/completions"
+        resolved_model_name = model_name or settings.groq_model
+        payload = {
+            "model": resolved_model_name,
+            "messages": messages,
+            "temperature": temperature,
+            "top_p": _DEFAULT_TOP_P,
+            "max_tokens": max_completion_tokens,
+            "stream": False,
+        }
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=25.0) as client:
+                response = await client.post(url, json=payload, headers=headers)
+
+            if response.status_code >= 400:
+                detail = response.text
+                try:
+                    body = response.json()
+                    error = body.get("error", {}) if isinstance(body, dict) else {}
+                    if isinstance(error, dict):
+                        detail = str(error.get("message") or detail)
+                except Exception:
+                    pass
+
+                raise _GroqRequestError(response.status_code, detail)
+
+            body = response.json()
+            if not isinstance(body, dict):
+                raise _GroqRequestError(response.status_code, "Unexpected Groq response shape")
+
+            usage_time = datetime.now(timezone.utc)
+            increment_fn(key_index, usage_time)
+            await _record_llm_usage(
+                provider="groq-context",
+                model_name=resolved_model_name,
+                api_key_label=f"{label_prefix}-{key_index + 1}",
+                now=usage_time,
+            )
+            return body
+
+        except _GroqRequestError as exc:
+            if _is_groq_key_exhausted_error(exc.status_code, exc.message):
+                exhausted_fn(key_index, exc.message)
+                continue
+
+            if attempt < max_attempts and _is_groq_retryable_error(exc.status_code, exc.message):
+                backoff_seconds = min(8, 2 ** (attempt - 1))
+                await asyncio.sleep(backoff_seconds)
+                continue
+
+            raise
+
+        except Exception as exc:
+            message = str(exc)
+            if attempt < max_attempts and _is_groq_retryable_error(None, message):
+                backoff_seconds = min(8, 2 ** (attempt - 1))
+                await asyncio.sleep(backoff_seconds)
+                continue
+            raise
+
+    return None
+
+
+def _create_cerebras_context_completion_sync(
+    messages: list[dict[str, str]],
+    *,
+    max_completion_tokens: int,
+    temperature: float,
+    model_name: str | None = None,
+    key_index: int = 0,
+) -> Any | None:
+    client = _get_cerebras_context_client(key_index)
+    if client is None:
+        return None
+
+    return client.chat.completions.create(
+        messages=messages,
+        model=model_name or settings.cerebras_model,
+        max_completion_tokens=max_completion_tokens,
+        temperature=temperature,
+        top_p=_DEFAULT_TOP_P,
+        stream=False,
+    )
+
+
+async def _create_cerebras_context_completion_async(
+    messages: list[dict[str, str]],
+    *,
+    max_completion_tokens: int,
+    temperature: float,
+    model_name: str | None = None,
+) -> dict[str, Any] | None:
+    keys = _normalized_cerebras_context_keys()
+    if not keys:
+        keys = _normalized_cerebras_keys()
+        if not keys:
+            return None
+    if Cerebras is None:
+        _log_missing_cerebras_once()
+        return None
+
+    max_attempts = max(3, len(keys) + 1)
+    for attempt in range(1, max_attempts + 1):
+        if _normalized_cerebras_context_keys():
+            key_index, api_key = _get_active_cerebras_context_key()
+            label_prefix = "cerebras-context-key"
+            exhausted_fn = _mark_cerebras_context_key_exhausted
+            increment_fn = _increment_cerebras_context_usage
+            sync_fn = _create_cerebras_context_completion_sync
+        else:
+            key_index, api_key = _get_active_cerebras_key()
+            label_prefix = "cerebras-key"
+            exhausted_fn = _mark_cerebras_key_exhausted
+            increment_fn = _increment_cerebras_usage
+            sync_fn = _create_cerebras_completion_sync
+
+        if api_key is None or key_index is None:
+            return None
+
+        try:
+            response = await asyncio.to_thread(
+                sync_fn,
+                messages,
+                max_completion_tokens=max_completion_tokens,
+                temperature=temperature,
+                model_name=model_name,
+                key_index=key_index,
+            )
+            if response is None:
+                continue
+
+            usage_time = datetime.now(timezone.utc)
+            increment_fn(key_index, usage_time)
+            await _record_llm_usage(
+                provider="cerebras-context",
+                model_name=model_name or settings.cerebras_model,
+                api_key_label=f"{label_prefix}-{key_index + 1}",
+                now=usage_time,
+            )
+
+            text = _extract_response_text(response)
+            if not text:
+                continue
+
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": text,
+                        }
+                    }
+                ]
+            }
+
+        except Exception as exc:
+            if _is_cerebras_key_exhausted_error(exc):
+                exhausted_fn(key_index, str(exc))
+                continue
+
+            if attempt < max_attempts and _is_retryable_cerebras_error(exc):
+                backoff_seconds = min(8, 2 ** (attempt - 1))
+                await asyncio.sleep(backoff_seconds)
+                continue
+
+            print(f"Cerebras context completion error: {exc}")
+            break
+
+    return None
+
+
+async def potentials_context_alert_match(news_text: str, context_alerts: list[dict[str, Any]]) -> list[int]:
+    if not context_alerts:
+        return []
+
+    alerts_formatted = "\n".join([
+        f"- ID: {alert['id']} | Context Alert Target: {alert['context_description']}"
+        for alert in context_alerts
+    ])
+
+    system_prompt = (
+        "You are a high-speed financial news alert filter.\n"
+        "Given a news item and a list of active Context Alert targets (with their IDs), "
+        "determine which targets MIGHT match the situation described in the news item.\n"
+        "Be inclusive but reasonable. If a target is a potential match, include its ID.\n"
+        "You MUST respond ONLY with a JSON list of integers representing the matched target IDs. "
+        "No other text, conversational filler, or formatting. For example: [1, 3]"
+    )
+
+    user_content = (
+        f"News Item:\n{news_text}\n\n"
+        f"Active Context Alert Targets:\n{alerts_formatted}\n\n"
+        "Output JSON list of matched IDs:"
+    )
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content}
+    ]
+
+    try:
+        res = await _create_groq_context_completion_async(
+            messages,
+            max_completion_tokens=256,
+            temperature=0.0,
+            model_name=settings.groq_model
+        )
+        if res:
+            text = res["choices"][0]["message"]["content"]
+            cleaned = re.sub(r"```json\s*", "", text)
+            cleaned = re.sub(r"```\s*", "", cleaned).strip()
+            match_ids = json.loads(cleaned)
+            if isinstance(match_ids, list):
+                return [int(x) for x in match_ids if str(x).strip().isdigit() or isinstance(x, int)]
+    except Exception as exc:
+        print(f"Error in potentials_context_alert_match: {exc}")
+    return []
+
+
+async def verify_context_alert_match(news_text: str, context_description: str) -> bool:
+    system_prompt = (
+        "You are an expert financial news analyst. Your task is to verify if a news message "
+        "matches a specified situation/context alert description with 100% confidence.\n"
+        "Analyze the context and situation carefully. Do not assume or extrapolate. The match must be clear and direct.\n"
+        "You MUST respond ONLY with the word 'YES' or 'NO'. No explanation, markdown, or other text."
+    )
+
+    user_content = (
+        f"Context Alert Description:\n{context_description}\n\n"
+        f"Incoming News Message:\n{news_text}\n\n"
+        "Does this news message match the context alert description with 100% certainty? Output YES or NO:"
+    )
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content}
+    ]
+
+    try:
+        res = await _create_cerebras_context_completion_async(
+            messages,
+            max_completion_tokens=10,
+            temperature=0.0,
+            model_name=settings.cerebras_chat_model
+        )
+        if res:
+            text = res["choices"][0]["message"]["content"].strip().upper()
+            if "YES" in text:
+                return True
+    except Exception as exc:
+        print(f"Error in verify_context_alert_match: {exc}")
+    return False
+
+
+async def propose_context_alert_description(instruction: str) -> str:
+    system_prompt = (
+        "You are an assistant that translates a user request for news alerts into a clean, precise, "
+        "and comprehensive description of the target situation/context.\n"
+        "This description will be matched against incoming news lines by an LLM.\n"
+        "Expand the user's brief request to cover synonyms, key events, and clarity, "
+        "while remaining very specific to the situation.\n"
+        "Keep the output description concise (1-2 sentences), and do not include any extra text or intro."
+    )
+
+    user_content = (
+        f"User Alert Request: '{instruction}'\n\n"
+        "Proposed Context Description:"
+    )
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content}
+    ]
+
+    try:
+        res = await _create_cerebras_context_completion_async(
+            messages,
+            max_completion_tokens=150,
+            temperature=0.5,
+            model_name=settings.cerebras_chat_model
+        )
+        if res:
+            return res["choices"][0]["message"]["content"].strip()
+    except Exception as exc:
+        print(f"Error in propose_context_alert_description: {exc}")
+    return f"Alert for: {instruction}"

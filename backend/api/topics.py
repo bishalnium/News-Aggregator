@@ -4,9 +4,20 @@ from fastapi import APIRouter, HTTPException
 
 from config import resolve_chat_model
 from database import get_pool
-from models import AlertProposalRequest, AlertProposalResponse, TopicCreate, TopicItem, TopicUpdate
+from models import (
+    AlertProposalRequest,
+    AlertProposalResponse,
+    TopicCreate,
+    TopicItem,
+    TopicUpdate,
+    ContextAlertCreate,
+    ContextAlertUpdate,
+    ContextAlertItem,
+    ContextAlertProposalRequest,
+    ContextAlertProposalResponse,
+)
 from processing.alert_engine import invalidate_topic_cache
-from processing.llm_classifier import propose_alert_topic_from_context
+from processing.llm_classifier import propose_alert_topic_from_context, propose_context_alert_description
 
 
 router = APIRouter(prefix="/topics", tags=["topics"])
@@ -154,3 +165,96 @@ async def delete_topic(topic_id: int) -> dict:
 
     invalidate_topic_cache()
     return {"ok": True, "deleted_topic_id": topic_id}
+
+
+# ---------------------------------------------------------------------------
+# Context Alerts Endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/context", response_model=list[ContextAlertItem])
+async def list_context_alerts() -> list[dict]:
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, context_description, active, created_at, updated_at
+            FROM context_alerts
+            ORDER BY created_at DESC
+            """
+        )
+    return [dict(row) for row in rows]
+
+
+@router.post("/context", response_model=ContextAlertItem)
+async def create_context_alert(payload: ContextAlertCreate) -> dict:
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO context_alerts(context_description, active)
+            VALUES($1, $2)
+            """,
+            payload.context_description.strip(),
+            payload.active,
+        )
+
+        alert_id = await conn.fetchval("SELECT LAST_INSERT_ID()")
+        row = await conn.fetchrow(
+            """
+            SELECT id, context_description, active, created_at, updated_at
+            FROM context_alerts
+            WHERE id = $1
+            """,
+            alert_id,
+        )
+    return dict(row)
+
+
+@router.put("/context/{alert_id}", response_model=ContextAlertItem)
+async def update_context_alert(alert_id: int, payload: ContextAlertUpdate) -> dict:
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        existing = await conn.fetchval("SELECT id FROM context_alerts WHERE id = $1", alert_id)
+        if not existing:
+            raise HTTPException(status_code=404, detail="Context alert not found")
+
+        await conn.execute(
+            """
+            UPDATE context_alerts
+            SET context_description = COALESCE($1, context_description),
+                active = COALESCE($2, active),
+                updated_at = NOW()
+            WHERE id = $3
+            """,
+            payload.context_description.strip() if payload.context_description else None,
+            payload.active,
+            alert_id,
+        )
+
+        row = await conn.fetchrow(
+            """
+            SELECT id, context_description, active, created_at, updated_at
+            FROM context_alerts
+            WHERE id = $1
+            """,
+            alert_id,
+        )
+    return dict(row)
+
+
+@router.delete("/context/{alert_id}")
+async def delete_context_alert(alert_id: int) -> dict:
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute("DELETE FROM context_alerts WHERE id = $1", alert_id)
+
+    if result.endswith("0"):
+        raise HTTPException(status_code=404, detail="Context alert not found")
+
+    return {"ok": True, "deleted_context_alert_id": alert_id}
+
+
+@router.post("/context/ai-proposal", response_model=ContextAlertProposalResponse)
+async def propose_context_alert(payload: ContextAlertProposalRequest) -> ContextAlertProposalResponse:
+    proposed = await propose_context_alert_description(payload.instruction)
+    return ContextAlertProposalResponse(proposed_description=proposed)

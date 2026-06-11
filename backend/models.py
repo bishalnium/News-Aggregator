@@ -139,3 +139,33 @@ class LlmUsageItem(BaseModel):
     bucket_start: datetime
     request_count: int
     updated_at: datetime
+
+
+class ContextAlertCreate(BaseModel):
+    context_description: str = Field(min_length=5)
+    active: bool = True
+
+
+class ContextAlertUpdate(BaseModel):
+    context_description: str | None = Field(default=None, min_length=5)
+    active: bool | None = None
+
+
+class ContextAlertItem(BaseModel):
+    id: int
+    context_description: str
+    active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class ContextAlertProposalRequest(BaseModel):
+    instruction: str = Field(min_length=3, max_length=1000)
+
+
+class ContextAlertProposalResponse(BaseModel):
+    proposed_description: str
+
+
+class PasscodeVerifyRequest(BaseModel):
+    passcode: str

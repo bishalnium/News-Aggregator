@@ -11,7 +11,7 @@ from typing import Any
 from api.websocket import websocket_manager
 from config import settings
 from database import get_pool
-from processing.alert_engine import check_and_trigger_alerts, instant_keyword_alert
+from processing.alert_engine import check_and_trigger_alerts, instant_keyword_alert, check_context_alerts
 from processing.llm_classifier import classify_news, classify_news_heuristic
 
 
@@ -247,6 +247,14 @@ class NewsPipeline:
             summary=news_row["summary"],
             urgency=news_row["urgency"],
             already_alerted_topics=already_alerted,
+        )
+
+        asyncio.create_task(
+            check_context_alerts(
+                news_id=int(news_row["id"]),
+                raw_text=news_row["raw_text"],
+                summary=news_row["summary"],
+            )
         )
 
         payload_json = _record_to_json(dict(news_row))

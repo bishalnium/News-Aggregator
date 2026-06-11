@@ -8,8 +8,9 @@ from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
-from bot.telegram_notifier import send_alert_message
+from bot.telegram_notifier import send_alert_message, send_context_alert_message
 from database import get_pool
+from processing.llm_classifier import potentials_context_alert_match, verify_context_alert_match
 
 
 URGENCY_RANK = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
@@ -452,3 +453,88 @@ async def check_and_trigger_alerts(
             )
 
     return matched_topic_names
+
+
+# ---------------------------------------------------------------------------
+# Context/Phrase-based matching alert system
+# ---------------------------------------------------------------------------
+
+_context_alert_cooldowns: dict[int, datetime] = {}
+_CONTEXT_ALERT_COOLDOWN = timedelta(minutes=3)
+
+
+async def check_context_alerts(news_id: int, raw_text: str, summary: str | None) -> None:
+    """Check a newly ingested news item against all active context-based alerts.
+    
+    1. Fetch active context alerts.
+    2. Filter candidates using potentials_context_alert_match (GPT-OSS).
+    3. Verify candidate matches using verify_context_alert_match (GLM 4.7).
+    4. If verified, send Telegram notification.
+    """
+    now = datetime.now(timezone.utc)
+    # clean up expired cooldowns
+    expired_ids = [
+        alert_id for alert_id, cooldown_until in _context_alert_cooldowns.items()
+        if now > cooldown_until
+    ]
+    for alert_id in expired_ids:
+        _context_alert_cooldowns.pop(alert_id, None)
+
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        active_alerts = await conn.fetch(
+            "SELECT id, context_description FROM context_alerts WHERE active = true"
+        )
+        if not active_alerts:
+            return
+
+        # 1. GPT-OSS filter candidates
+        news_content = f"{raw_text}\n{summary or ''}"
+        candidate_ids = await potentials_context_alert_match(news_content, active_alerts)
+        if not candidate_ids:
+            return
+
+        # Map candidate IDs back to alerts
+        alert_map = {alert["id"]: alert for alert in active_alerts}
+
+        for alert_id in candidate_ids:
+            alert = alert_map.get(alert_id)
+            if not alert:
+                continue
+
+            # check cooldown
+            cooldown_until = _context_alert_cooldowns.get(alert_id)
+            if cooldown_until and now <= cooldown_until:
+                continue
+
+            # 2. GLM 4.7 strict verify
+            context_description = alert["context_description"]
+            is_match = await verify_context_alert_match(news_content, context_description)
+            if not is_match:
+                continue
+
+            # Set cooldown immediately to avoid concurrent duplicates
+            _context_alert_cooldowns[alert_id] = now + _CONTEXT_ALERT_COOLDOWN
+
+            # 3. Send Telegram Alert
+            message = (
+                f"🎯 <b>SITUATION ALERT</b>\n"
+                f"<b>Matched Context Alert:</b> {escape(context_description)}\n"
+                f"<b>Summary:</b>\n"
+                f"{_bulletize_text(summary or raw_text, max_points=3)}"
+            )
+
+            try:
+                delivered = await send_context_alert_message(message, parse_mode="HTML")
+                if delivered:
+                    # Log to database
+                    await conn.execute(
+                        """
+                        INSERT INTO alert_log (news_id, topic_id, channel, message_text)
+                        VALUES ($1, NULL, 'telegram-context', $2)
+                        """,
+                        news_id,
+                        message
+                    )
+            except Exception as exc:
+                print(f"Failed to deliver context alert {alert_id}: {exc}")

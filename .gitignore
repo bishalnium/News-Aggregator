@@ -21,3 +21,13 @@ frontend/dist/
 # OS
 .DS_Store
 Thumbs.db
+
+# Private files, keys and screenshots
+private/
+public key.txt
+aampaan----*.txt
+*.png
+*.jpg
+*.jpeg
+*.gif
+Deploying Aether to OCI.md

@@ -729,3 +729,207 @@ th {
     width: 100%;
   }
 }
+
+/* ----------------------------------------------------
+   App Lock Passcode Screen Styles
+   ---------------------------------------------------- */
+.passcode-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+  background: var(--bg-gradient);
+  padding: 20px;
+}
+
+.passcode-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  border-radius: 20px;
+  padding: 40px 30px;
+  width: 100%;
+  max-width: 440px;
+  text-align: center;
+  transition: transform 0.3s ease;
+}
+
+.passcode-card h2 {
+  margin-top: 0;
+  margin-bottom: 12px;
+  font-size: 2.2rem;
+  font-weight: 800;
+  color: var(--ink);
+  letter-spacing: -0.02em;
+}
+
+.passcode-card p {
+  color: var(--muted);
+  font-size: 0.95rem;
+  line-height: 1.5;
+  margin-bottom: 24px;
+}
+
+.passcode-card form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.passcode-card input[type="password"] {
+  width: 100%;
+  font-size: 1.1rem;
+  padding: 12px 16px;
+  text-align: center;
+  letter-spacing: 0.25em;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  transition: border-color 0.2s ease;
+}
+
+.passcode-card input[type="password"]:focus {
+  outline: none;
+  border-color: var(--brand);
+}
+
+.passcode-error {
+  color: var(--high);
+  background: rgba(214, 40, 40, 0.08);
+  border: 1px solid rgba(214, 40, 40, 0.2);
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.passcode-card button {
+  width: 100%;
+  font-size: 1rem;
+  padding: 12px;
+  font-weight: 700;
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #ffffff;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.passcode-card button:hover {
+  background: var(--brand-strong);
+  border-color: var(--brand-strong);
+}
+
+/* ----------------------------------------------------
+   Watchlist / Alert Setup Tab Switcher
+   ---------------------------------------------------- */
+.tab-switcher {
+  display: flex;
+  gap: 8px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 8px;
+  margin-bottom: 16px;
+}
+
+.tab-switcher button {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  padding: 8px 16px;
+  font-weight: 600;
+  font-size: 0.95rem;
+  border-radius: 8px;
+  transition: all 0.2s ease;
+}
+
+.tab-switcher button:hover {
+  background: rgba(0, 133, 122, 0.06);
+  color: var(--ink);
+}
+
+.tab-switcher button.active {
+  background: var(--nav-active-bg);
+  color: var(--nav-active-text);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+[data-theme="dark"] .tab-switcher button.active {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+/* ----------------------------------------------------
+   Summary Bullet Spacing & Entity Highlights
+   ---------------------------------------------------- */
+.summary-text-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.summary-line {
+  margin: 0;
+  font-size: 0.92rem;
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+.summary-entity {
+  font-weight: 700;
+  color: var(--brand-strong);
+  background: rgba(0, 133, 122, 0.05);
+  padding: 1px 3px;
+  border-radius: 4px;
+  border-bottom: 1px dashed var(--brand);
+}
+
+/* ----------------------------------------------------
+   Urgency Levels Legend Bar
+   ---------------------------------------------------- */
+.urgency-legend {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 8px 16px;
+  margin-bottom: 16px;
+  font-size: 0.84rem;
+  flex-wrap: wrap;
+}
+
+.urgency-legend-label {
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.urgency-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: help;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.legend-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.legend-dot.low {
+  background-color: var(--low);
+}
+
+.legend-dot.medium {
+  background-color: var(--medium);
+}
+
+.legend-dot.high {
+  background-color: var(--high);
+}
