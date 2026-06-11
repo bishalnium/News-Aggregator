@@ -64,8 +64,8 @@ export function setSummaryInterval(intervalSeconds) {
   });
 }
 
-export function sendTestAlert() {
-  return request("/settings/test-alert", {
+export function sendTestAlert(alertType = "keyword") {
+  return request(`/settings/test-alert?alert_type=${alertType}`, {
     method: "POST",
   });
 }

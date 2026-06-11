@@ -191,7 +191,7 @@ function Watchlist() {
 
   async function handleTestAlert() {
     try {
-      const response = await sendTestAlert();
+      const response = await sendTestAlert(activeTab);
       setStatus(response.message || "Alert bot test sent");
     } catch (err) {
       setStatus(err.message || "Failed to send test alert");

@@ -4,7 +4,7 @@ import asyncio
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from bot.telegram_notifier import send_alert_message
+from bot.telegram_notifier import send_alert_message, send_context_alert_message
 from config import ALLOWED_SUMMARY_INTERVALS, runtime_state, settings
 from database import get_pool, save_summary_interval
 from models import (
@@ -116,16 +116,24 @@ async def get_llm_usage(
 
 
 @router.post("/test-alert")
-async def test_alert_delivery() -> dict[str, str | bool]:
-    sent = await send_alert_message("Alert bot test: configuration is working.")
+async def test_alert_delivery(alert_type: str = Query("keyword")) -> dict[str, str | bool]:
+    if alert_type == "context":
+        sent = await send_context_alert_message("Context alert bot test: configuration is working.")
+        success_msg = "Test alert delivered to CONTEXT_CHAT_ID."
+        fail_msg = "Context alert bot send failed. Check CONTEXT_BOT_TOKEN and CONTEXT_CHAT_ID."
+    else:
+        sent = await send_alert_message("Alert bot test: configuration is working.")
+        success_msg = "Test alert delivered to ALERT_CHAT_ID."
+        fail_msg = "Alert bot send failed. Check ALERT_BOT_TOKEN and ALERT_CHAT_ID."
+
     if sent:
         return {
             "ok": True,
-            "message": "Test alert delivered to ALERT_CHAT_ID.",
+            "message": success_msg,
         }
     return {
         "ok": False,
-        "message": "Alert bot send failed. Check ALERT_BOT_TOKEN and ALERT_CHAT_ID.",
+        "message": fail_msg,
     }
 
 
