@@ -2185,7 +2185,7 @@ async def verify_context_alert_match(news_text: str, context_description: str) -
     try:
         res = await _create_cerebras_context_completion_async(
             messages,
-            max_completion_tokens=10,
+            max_completion_tokens=2048,
             temperature=0.0,
             model_name=settings.cerebras_chat_model
         )
@@ -2221,7 +2221,7 @@ async def propose_context_alert_description(instruction: str) -> str:
     try:
         res = await _create_cerebras_context_completion_async(
             messages,
-            max_completion_tokens=150,
+            max_completion_tokens=2048,
             temperature=0.5,
             model_name=settings.cerebras_chat_model
         )
