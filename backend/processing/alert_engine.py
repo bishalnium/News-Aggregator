@@ -517,11 +517,14 @@ async def check_context_alerts(news_id: int, raw_text: str, summary: str | None)
             _context_alert_cooldowns[alert_id] = now + _CONTEXT_ALERT_COOLDOWN
 
             # 3. Send Telegram Alert
+            short_desc = context_description
+            if len(short_desc) > 120:
+                short_desc = short_desc[:120] + "..."
             message = (
-                f"🎯 <b>SITUATION ALERT</b>\n"
-                f"<b>Matched Context Alert:</b> {escape(context_description)}\n"
+                f"🎯 <b>SITUATION ALERT</b>\n\n"
                 f"<b>Summary:</b>\n"
-                f"{_bulletize_text(summary or raw_text, max_points=3)}"
+                f"{_bulletize_text(summary or raw_text, max_points=3)}\n\n"
+                f"<b>Matched Alert:</b> {escape(short_desc)}"
             )
 
             try:
