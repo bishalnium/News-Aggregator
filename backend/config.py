@@ -137,6 +137,14 @@ class Settings:
     groq_context_api_keys: List[str]
     cerebras_context_api_keys: List[str]
 
+    # Proxy settings (optional — only needed when Telegram is blocked)
+    proxy_enabled: bool
+    proxy_type: str       # "socks5" or "http"
+    proxy_host: str
+    proxy_port: int
+    proxy_username: str
+    proxy_password: str
+
     startup_summary_interval_seconds: int
 
     @classmethod
@@ -253,6 +261,13 @@ class Settings:
             app_passcode=os.getenv("APP_PASSCODE", "7539"),
             groq_context_api_keys=_parse_csv(os.getenv("GROQ_CONTEXT_API_KEYS", "")),
             cerebras_context_api_keys=_parse_csv(os.getenv("CEREBRAS_CONTEXT_API_KEYS", "")),
+            # Proxy settings
+            proxy_enabled=_parse_bool(os.getenv("PROXY_ENABLED"), default=False),
+            proxy_type=os.getenv("PROXY_TYPE", "socks5").strip().lower(),
+            proxy_host=os.getenv("PROXY_HOST", ""),
+            proxy_port=_parse_int(os.getenv("PROXY_PORT"), 0),
+            proxy_username=os.getenv("PROXY_USERNAME", ""),
+            proxy_password=os.getenv("PROXY_PASSWORD", ""),
             startup_summary_interval_seconds=startup_interval,
         )
 
@@ -328,3 +343,50 @@ def resolve_chat_model(model_id: str | None) -> dict[str, str]:
         if option["id"] == requested:
             return option
     return options[0]
+
+
+def build_telethon_proxy() -> dict | None:
+    """Build a proxy config dict for Telethon if proxy is enabled."""
+    if not settings.proxy_enabled or not settings.proxy_host or not settings.proxy_port:
+        return None
+
+    try:
+        from python_socks import ProxyType
+    except ImportError:
+        print("WARNING: python-socks not installed. Cannot use proxy for Telethon.")
+        return None
+
+    proxy_type_map = {
+        "socks5": ProxyType.SOCKS5,
+        "socks4": ProxyType.SOCKS4,
+        "http": ProxyType.HTTP,
+    }
+
+    selected_type = proxy_type_map.get(settings.proxy_type, ProxyType.SOCKS5)
+
+    proxy_config = {
+        "proxy_type": selected_type,
+        "addr": settings.proxy_host,
+        "port": settings.proxy_port,
+        "rdns": True,
+    }
+
+    if settings.proxy_username:
+        proxy_config["username"] = settings.proxy_username
+    if settings.proxy_password:
+        proxy_config["password"] = settings.proxy_password
+
+    return proxy_config
+
+
+def build_httpx_proxy_url() -> str | None:
+    """Build a SOCKS5 proxy URL string for httpx-socks if proxy is enabled."""
+    if not settings.proxy_enabled or not settings.proxy_host or not settings.proxy_port:
+        return None
+
+    scheme = "socks5" if settings.proxy_type == "socks5" else "http"
+
+    if settings.proxy_username and settings.proxy_password:
+        return f"{scheme}://{settings.proxy_username}:{settings.proxy_password}@{settings.proxy_host}:{settings.proxy_port}"
+    else:
+        return f"{scheme}://{settings.proxy_host}:{settings.proxy_port}"

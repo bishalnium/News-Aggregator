@@ -6,7 +6,7 @@ from typing import Any, Awaitable, Callable
 
 from telethon import TelegramClient, events
 
-from config import settings
+from config import build_telethon_proxy, settings
 
 
 NewsHandler = Callable[[dict[str, Any]], Awaitable[None]]
@@ -41,11 +41,17 @@ class TelegramListener:
                 await asyncio.sleep(5)
 
     async def _run_once(self) -> None:
-        self._client = TelegramClient(
-            str(self._session_file),
-            settings.telegram_api_id,
-            settings.telegram_api_hash,
-        )
+        proxy = build_telethon_proxy()
+        client_kwargs = {
+            "session": str(self._session_file),
+            "api_id": settings.telegram_api_id,
+            "api_hash": settings.telegram_api_hash,
+        }
+        if proxy:
+            client_kwargs["proxy"] = proxy
+            print(f"Telegram listener using proxy: {settings.proxy_host}:{settings.proxy_port}")
+
+        self._client = TelegramClient(**client_kwargs)
 
         await self._client.start(phone=settings.telegram_phone or None)
 

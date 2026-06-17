@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import httpx
 
-from config import settings
+from config import build_httpx_proxy_url, settings
 
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
@@ -41,7 +41,18 @@ async def _send_message(
     chunks = _split_telegram_chunks(text or "")
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        client_kwargs: dict = {"timeout": 10.0}
+
+        proxy_url = build_httpx_proxy_url()
+        if proxy_url:
+            try:
+                from httpx_socks import AsyncProxyTransport
+                transport = AsyncProxyTransport.from_url(proxy_url)
+                client_kwargs["transport"] = transport
+            except ImportError:
+                print("WARNING: httpx-socks not installed. Sending without proxy.")
+
+        async with httpx.AsyncClient(**client_kwargs) as client:
             for chunk in chunks:
                 payload = {
                     "chat_id": chat_id,
