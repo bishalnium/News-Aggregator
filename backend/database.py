@@ -128,6 +128,13 @@ CREATE TABLE IF NOT EXISTS llm_api_usage (
     ),
     INDEX idx_llm_api_usage_updated_at (updated_at)
 );
+
+CREATE TABLE IF NOT EXISTS mobile_devices (
+    fcm_token VARCHAR(255) PRIMARY KEY,
+    device_name VARCHAR(120),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
 """
 
 
@@ -406,4 +413,26 @@ async def save_proxy_setting(enabled: bool) -> bool:
             "true" if enabled else "false",
         )
     return enabled
+
+
+async def save_fcm_token(token: str, device_name: str | None = None) -> None:
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO mobile_devices(fcm_token, device_name)
+            VALUES($1, $2) AS incoming
+            ON DUPLICATE KEY UPDATE device_name = incoming.device_name, updated_at = CURRENT_TIMESTAMP
+            """,
+            token,
+            device_name,
+        )
+
+
+async def get_all_fcm_tokens() -> list[str]:
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT fcm_token FROM mobile_devices")
+        return [row["fcm_token"] for row in rows]
+
 

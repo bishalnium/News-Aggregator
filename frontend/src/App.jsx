@@ -7,7 +7,7 @@ import ChatAssistant from "./pages/ChatAssistant";
 import NewsFeed from "./pages/NewsFeed";
 import Watchlist from "./pages/Watchlist";
 import Settings from "./pages/Settings";
-import { verifyPasscode } from "./api";
+import { verifyPasscode, verifyBypassToken } from "./api";
 
 const THEME_STORAGE_KEY = "newscodex-theme";
 
@@ -51,7 +51,7 @@ function PasscodeScreen({ onUnlock }) {
   return (
     <div className="passcode-container">
       <div className="passcode-card">
-        <h2>News Codex</h2>
+        <h2>NewsBuddy</h2>
         <p>Enter passcode to access the secure news aggregator stream.</p>
         <form onSubmit={handleSubmit}>
           <input
@@ -77,11 +77,39 @@ function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(() => {
     return window.sessionStorage.getItem("newscodex-auth") === "true";
   });
+  const [verifyingBypass, setVerifyingBypass] = useState(() => {
+    if (window.sessionStorage.getItem("newscodex-auth") === "true") {
+      return false;
+    }
+    const params = new URLSearchParams(window.location.search);
+    return !!params.get("bypass");
+  });
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
     window.localStorage.setItem(THEME_STORAGE_KEY, theme);
   }, [theme]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const bypassToken = params.get("bypass");
+
+    if (bypassToken && !isAuthenticated) {
+      verifyBypassToken(bypassToken)
+        .then((res) => {
+          if (res && res.ok) {
+            window.sessionStorage.setItem("newscodex-auth", "true");
+            setIsAuthenticated(true);
+          }
+        })
+        .catch((err) => {
+          console.error("Failed to verify bypass token:", err);
+        })
+        .finally(() => {
+          setVerifyingBypass(false);
+        });
+    }
+  }, [isAuthenticated]);
 
   function toggleTheme() {
     setTheme((prev) => (prev === "dark" ? "light" : "dark"));
@@ -90,6 +118,17 @@ function App() {
   function handleUnlock() {
     window.sessionStorage.setItem("newscodex-auth", "true");
     setIsAuthenticated(true);
+  }
+
+  if (verifyingBypass) {
+    return (
+      <div className="passcode-container">
+        <div className="passcode-card" style={{ textAlign: "center" }}>
+          <h2>Authenticating Secure Session...</h2>
+          <p>Connecting to NewsBuddy mobile gateway.</p>
+        </div>
+      </div>
+    );
   }
 
   if (!isAuthenticated) {

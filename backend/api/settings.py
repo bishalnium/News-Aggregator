@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from bot.telegram_notifier import send_alert_message, send_context_alert_message
 from config import ALLOWED_SUMMARY_INTERVALS, runtime_state, settings
-from database import get_pool, save_summary_interval, save_proxy_setting
+from database import get_pool, save_summary_interval, save_proxy_setting, save_fcm_token
 from models import (
     LlmUsageItem,
     SummaryBatch,
@@ -14,6 +14,8 @@ from models import (
     SummaryIntervalResponse,
     PasscodeVerifyRequest,
     ProxyToggleRequest,
+    BypassVerifyRequest,
+    FcmRegisterRequest,
 )
 
 
@@ -182,4 +184,29 @@ async def toggle_proxy(payload: ProxyToggleRequest, request: Request) -> dict:
             status_code=500,
             detail=f"Failed to save proxy setting: {str(e)}"
         )
+
+
+@router.post("/verify-bypass")
+async def verify_bypass(payload: BypassVerifyRequest) -> dict:
+    if not settings.mobile_bypass_token:
+        raise HTTPException(
+            status_code=401,
+            detail="Mobile bypass token is not configured on the server"
+        )
+    if payload.token == settings.mobile_bypass_token:
+        return {"ok": True}
+    raise HTTPException(status_code=401, detail="Invalid bypass token")
+
+
+@router.post("/register-fcm-token")
+async def register_fcm_token(payload: FcmRegisterRequest) -> dict:
+    try:
+        await save_fcm_token(payload.fcm_token, payload.device_name)
+        return {"ok": True, "message": "FCM token registered successfully"}
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to register FCM token: {str(e)}"
+        )
+
 

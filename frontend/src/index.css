@@ -1259,3 +1259,118 @@ th {
   font-size: 0.92rem;
 }
 
+
+/* ----------------------------------------------------
+   Mobile Responsive Adjustments
+   ---------------------------------------------------- */
+@media (max-width: 768px) {
+  .app-shell {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+    padding-bottom: 72px; /* Prevent bottom nav overlap */
+  }
+
+  .sidebar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 64px;
+    border-right: none;
+    border-top: 1px solid var(--line);
+    padding: 0 8px;
+    z-index: 1000;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-around;
+    gap: 0;
+    background: var(--sidebar-bg);
+    backdrop-filter: blur(12px);
+    box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.08);
+  }
+
+  .brand-wrap {
+    display: none !important;
+  }
+
+  .sidebar-footnote {
+    display: none !important;
+  }
+
+  .sidebar-nav {
+    flex-direction: row;
+    width: 100%;
+    justify-content: space-around;
+    gap: 4px;
+    margin: 0;
+  }
+
+  .nav-link {
+    border: none;
+    border-radius: 8px;
+    padding: 8px 6px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    text-align: center;
+    white-space: nowrap;
+    transition: none;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .nav-link:hover {
+    transform: none;
+  }
+
+  .app-main {
+    padding: 12px;
+  }
+
+  .page-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .page-header h2 {
+    font-size: 1.4rem;
+  }
+
+  .header-actions-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  /* Adjust grid layouts to single column on mobile */
+  .news-layout {
+    grid-template-columns: 1fr !important;
+  }
+
+  .watchlist-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .settings-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .proxy-info-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Chat styles for mobile */
+  .chat-container {
+    height: calc(100vh - 170px) !important;
+  }
+}
+
+

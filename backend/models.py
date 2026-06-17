@@ -174,3 +174,13 @@ class PasscodeVerifyRequest(BaseModel):
 class ProxyToggleRequest(BaseModel):
     enabled: bool
 
+
+class BypassVerifyRequest(BaseModel):
+    token: str
+
+
+class FcmRegisterRequest(BaseModel):
+    fcm_token: str
+    device_name: str | None = None
+
+

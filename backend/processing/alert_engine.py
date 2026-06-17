@@ -9,7 +9,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
 from bot.telegram_notifier import send_alert_message, send_context_alert_message
-from database import get_pool
+from database import get_pool, get_all_fcm_tokens
+from bot.fcm_notifier import send_push_notification
 from processing.llm_classifier import potentials_context_alert_match, verify_context_alert_match
 
 
@@ -129,6 +130,16 @@ def _cleanup_instant_dedup(now: datetime) -> None:
         _instant_alert_sent.pop(key, None)
 
 
+
+async def trigger_push_alert(title: str, body: str, alert_type: str) -> None:
+    try:
+        tokens = await get_all_fcm_tokens()
+        if tokens:
+            asyncio.create_task(send_push_notification(tokens, title, body, alert_type))
+    except Exception as e:
+        print(f"FCM: Failed to trigger push alert: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Instant keyword alert — fires BEFORE pipeline processing
 # ---------------------------------------------------------------------------
@@ -180,6 +191,17 @@ async def instant_keyword_alert(raw_text: str, content_hash: str) -> list[str]:
                 # Log to alert_log (fire-and-forget, don't block)
                 asyncio.create_task(
                     _log_instant_alert(topic_id, content_hash, message)
+                )
+                # Send FCM push notification (fire-and-forget, don't block)
+                push_body = f"Keywords: {', '.join(hits[:6])}\n{raw_text[:150]}"
+                if len(raw_text) > 150:
+                    push_body += "..."
+                asyncio.create_task(
+                    trigger_push_alert(
+                        title=f"⚡ Instant Alert: {topic['topic_name']}",
+                        body=push_body,
+                        alert_type="keyword"
+                    )
                 )
         except Exception as exc:
             print(f"Instant alert delivery failed for topic {topic_id}: {exc}")
@@ -395,6 +417,17 @@ async def check_and_trigger_alerts(
                     news_id,
                     immediate_message,
                 )
+                # Send FCM push notification (fire-and-forget, don't block)
+                push_body = f"Reason: {'; '.join(signal_reason_parts)}\n{summary or raw_text}"
+                if len(push_body) > 150:
+                    push_body = push_body[:150] + "..."
+                asyncio.create_task(
+                    trigger_push_alert(
+                        title=f"📡 Signal Alert ({normalized_urgency})",
+                        body=push_body,
+                        alert_type="keyword"
+                    )
+                )
 
         topics = await conn.fetch(
             """
@@ -441,6 +474,17 @@ async def check_and_trigger_alerts(
                     news_id,
                     topic["id"],
                     message,
+                )
+                # Send FCM push notification (fire-and-forget, don't block)
+                push_body = f"Keywords: {', '.join(hits[:6])}\n{summary or raw_text}"
+                if len(push_body) > 150:
+                    push_body = push_body[:150] + "..."
+                asyncio.create_task(
+                    trigger_push_alert(
+                        title=f"🎯 Topic Alert: {topic_name}",
+                        body=push_body,
+                        alert_type="keyword"
+                    )
                 )
             else:
                 print(f"Alert delivery failed for topic {topic['id']}")
@@ -538,6 +582,17 @@ async def check_context_alerts(news_id: int, raw_text: str, summary: str | None)
                         """,
                         news_id,
                         message
+                    )
+                    # Send FCM push notification (fire-and-forget, don't block)
+                    push_body = f"Alert: {short_desc}\n{summary or raw_text}"
+                    if len(push_body) > 150:
+                        push_body = push_body[:150] + "..."
+                    asyncio.create_task(
+                        trigger_push_alert(
+                            title="🎯 Situation Alert",
+                            body=push_body,
+                            alert_type="context"
+                        )
                     )
             except Exception as exc:
                 print(f"Failed to deliver context alert {alert_id}: {exc}")

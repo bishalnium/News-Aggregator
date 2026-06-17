@@ -147,6 +147,11 @@ class Settings:
 
     startup_summary_interval_seconds: int
 
+    # Mobile App Settings
+    fcm_credentials_path: str
+    mobile_bypass_token: str
+
+
     @classmethod
     def from_env(cls) -> "Settings":
         startup_interval = int(os.getenv("SUMMARY_INTERVAL_SECONDS", "120"))
@@ -269,6 +274,8 @@ class Settings:
             proxy_username=os.getenv("PROXY_USERNAME", ""),
             proxy_password=os.getenv("PROXY_PASSWORD", ""),
             startup_summary_interval_seconds=startup_interval,
+            fcm_credentials_path=os.getenv("FCM_CREDENTIALS_PATH", "").strip(),
+            mobile_bypass_token=os.getenv("MOBILE_BYPASS_TOKEN", "").strip(),
         )
 
 

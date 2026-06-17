@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">newsbuddy</string>
+    <string name="website_url">https://news-aggregator-seven-rho.vercel.app</string>
+    <string name="bypass_token">newscodex-secure-bypass-11223344</string>
+    <string name="backend_api_url">https://news-aggregator-seven-rho.vercel.app/backend/api</string>
+</resources>

@@ -139,6 +139,20 @@ export function verifyPasscode(passcode) {
   });
 }
 
+export function verifyBypassToken(token) {
+  return request("/settings/verify-bypass", {
+    method: "POST",
+    body: JSON.stringify({ token }),
+  });
+}
+
+export function registerFcmToken(fcmToken, deviceName = null) {
+  return request("/settings/register-fcm-token", {
+    method: "POST",
+    body: JSON.stringify({ fcm_token: fcmToken, device_name: deviceName }),
+  });
+}
+
 export function fetchContextAlerts() {
   return request("/topics/context");
 }

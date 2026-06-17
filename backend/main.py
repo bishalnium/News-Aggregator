@@ -22,6 +22,11 @@ async def lifespan(app: FastAPI):
     loaded_interval = await load_runtime_settings()
     await load_proxy_setting()
 
+    # Initialize Firebase Cloud Messaging
+    from bot.fcm_notifier import init_fcm
+    init_fcm()
+
+
 
     pipeline = NewsPipeline()
     await pipeline.start(worker_count=4)

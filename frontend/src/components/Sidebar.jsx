@@ -13,7 +13,7 @@ function Sidebar({ theme, onToggleTheme }) {
     <aside className="sidebar">
       <div className="brand-wrap">
         <p className="brand-kicker">Reliable Source Engine</p>
-        <h1 className="brand-title">News Codex</h1>
+        <h1 className="brand-title">NewsBuddy</h1>
         <button type="button" className="theme-toggle-btn" onClick={onToggleTheme}>
           {theme === "dark" ? "Switch To Light" : "Switch To Dark"}
         </button>
