@@ -63,7 +63,7 @@ function parseAlertMessage(item) {
     return {
       title: item.topic_name || "Keyword Alert",
       matchedKeywords: matchedKeywords,
-      summary: item.news_summary || rawMessage || cleanHtml(text)
+      summary: rawMessage || item.news_summary || cleanHtml(text)
     };
   }
 }
@@ -172,6 +172,11 @@ function AlertHistory() {
                           {item.urgency}
                         </span>
                       )}
+                      {parsed.matchedKeywords && (
+                        <span className="keyword-match-badge">
+                          Keywords: {parsed.matchedKeywords}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <time className="alert-card-time">{formatDate(item.sent_at)}</time>
@@ -182,13 +187,6 @@ function AlertHistory() {
                     <span className="section-label">Summary / Content</span>
                     <p className="section-text">{parsed.summary}</p>
                   </div>
-
-                  {parsed.matchedKeywords && (
-                    <div className="alert-card-section keywords-section">
-                      <span className="section-label">Matched Keywords</span>
-                      <p className="keyword-hits">{parsed.matchedKeywords}</p>
-                    </div>
-                  )}
 
                   {parsed.matchedAlert && (
                     <div className="alert-card-section context-section">

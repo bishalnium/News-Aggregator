@@ -1136,6 +1136,17 @@ th {
   color: #c0392b;
 }
 
+.keyword-match-badge {
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  background: rgba(0, 133, 122, 0.1);
+  color: var(--brand-strong);
+}
+
+
 .alert-card-time {
   font-size: 0.78rem;
   font-weight: 600;

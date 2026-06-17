@@ -46,6 +46,8 @@ class TelegramListener:
             "session": str(self._session_file),
             "api_id": settings.telegram_api_id,
             "api_hash": settings.telegram_api_hash,
+            "connection_retries": 5 if proxy else 1,
+            "timeout": 10.0,
         }
         if proxy:
             client_kwargs["proxy"] = proxy
