@@ -5,6 +5,7 @@ const links = [
   { to: "/watchlist", label: "Alert Setup" },
   { to: "/alerts", label: "Alert History" },
   { to: "/chat", label: "AI Chat" },
+  { to: "/settings", label: "Settings" },
 ];
 
 function Sidebar({ theme, onToggleTheme }) {

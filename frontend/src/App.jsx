@@ -6,6 +6,7 @@ import AlertHistory from "./pages/AlertHistory";
 import ChatAssistant from "./pages/ChatAssistant";
 import NewsFeed from "./pages/NewsFeed";
 import Watchlist from "./pages/Watchlist";
+import Settings from "./pages/Settings";
 import { verifyPasscode } from "./api";
 
 const THEME_STORAGE_KEY = "newscodex-theme";
@@ -104,6 +105,7 @@ function App() {
           <Route path="/watchlist" element={<Watchlist />} />
           <Route path="/alerts" element={<AlertHistory />} />
           <Route path="/chat" element={<ChatAssistant />} />
+          <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>

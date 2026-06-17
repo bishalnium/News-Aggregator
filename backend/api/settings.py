@@ -6,13 +6,14 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from bot.telegram_notifier import send_alert_message, send_context_alert_message
 from config import ALLOWED_SUMMARY_INTERVALS, runtime_state, settings
-from database import get_pool, save_summary_interval
+from database import get_pool, save_summary_interval, save_proxy_setting
 from models import (
     LlmUsageItem,
     SummaryBatch,
     SummaryIntervalRequest,
     SummaryIntervalResponse,
     PasscodeVerifyRequest,
+    ProxyToggleRequest,
 )
 
 
@@ -149,3 +150,36 @@ async def verify_passcode(payload: PasscodeVerifyRequest) -> dict:
     if payload.passcode == settings.app_passcode:
         return {"ok": True}
     raise HTTPException(status_code=401, detail="Invalid passcode")
+
+
+@router.get("/proxy")
+async def get_proxy_status() -> dict:
+    return {
+        "proxy_enabled": settings.proxy_enabled,
+        "proxy_type": settings.proxy_type,
+        "proxy_host": settings.proxy_host,
+        "proxy_port": settings.proxy_port,
+    }
+
+
+@router.post("/proxy-toggle")
+async def toggle_proxy(payload: ProxyToggleRequest, request: Request) -> dict:
+    try:
+        await save_proxy_setting(payload.enabled)
+        
+        listener = getattr(request.app.state, "telegram_listener", None)
+        if listener is not None:
+            print(f"Proxy toggle requested: enabled={payload.enabled}. Restarting Telegram listener...")
+            await listener.stop()
+            
+        return {
+            "ok": True,
+            "message": f"Proxy successfully {'enabled' if payload.enabled else 'disabled'}.",
+            "proxy_enabled": settings.proxy_enabled,
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to save proxy setting: {str(e)}"
+        )
+

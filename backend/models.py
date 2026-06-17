@@ -169,3 +169,8 @@ class ContextAlertProposalResponse(BaseModel):
 
 class PasscodeVerifyRequest(BaseModel):
     passcode: str
+
+
+class ProxyToggleRequest(BaseModel):
+    enabled: bool
+

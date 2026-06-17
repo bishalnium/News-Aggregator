@@ -70,6 +70,18 @@ export function sendTestAlert(alertType = "keyword") {
   });
 }
 
+export function getProxyStatus() {
+  return request("/settings/proxy");
+}
+
+export function toggleProxy(enabled) {
+  return request("/settings/proxy-toggle", {
+    method: "POST",
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+
 export function fetchTopics() {
   return request("/topics");
 }
@@ -101,8 +113,12 @@ export function deleteTopic(topicId) {
   });
 }
 
-export function fetchAlerts(limit = 120) {
-  return request(`/alerts?limit=${limit}`);
+export function fetchAlerts(limit = 120, alertType = null) {
+  let url = `/alerts?limit=${limit}`;
+  if (alertType) {
+    url += `&alert_type=${alertType}`;
+  }
+  return request(url);
 }
 
 export function fetchChatModels() {

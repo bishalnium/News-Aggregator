@@ -365,3 +365,45 @@ async def save_summary_interval(seconds: int) -> int:
             str(seconds),
         )
     return seconds
+
+
+async def load_proxy_setting() -> bool:
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT value FROM app_settings WHERE setting_key = $1",
+            "proxy_enabled",
+        )
+        if row:
+            value = row["value"].lower() == "true"
+            settings.proxy_enabled = value
+            return value
+
+        current = settings.proxy_enabled
+        await conn.execute(
+            """
+            INSERT INTO app_settings(setting_key, value)
+            VALUES($1, $2) AS incoming
+            ON DUPLICATE KEY UPDATE value = incoming.value, updated_at = CURRENT_TIMESTAMP
+            """,
+            "proxy_enabled",
+            "true" if current else "false",
+        )
+        return current
+
+
+async def save_proxy_setting(enabled: bool) -> bool:
+    settings.proxy_enabled = enabled
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO app_settings(setting_key, value)
+            VALUES($1, $2) AS incoming
+            ON DUPLICATE KEY UPDATE value = incoming.value, updated_at = CURRENT_TIMESTAMP
+            """,
+            "proxy_enabled",
+            "true" if enabled else "false",
+        )
+    return enabled
+

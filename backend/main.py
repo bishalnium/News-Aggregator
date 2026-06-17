@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api import alerts, chat, news, settings as settings_api, topics, websocket
 from config import runtime_state, settings
-from database import close_pool, init_pool, init_schema, load_runtime_settings
+from database import close_pool, init_pool, init_schema, load_runtime_settings, load_proxy_setting
 from ingestion.telegram_listener import TelegramListener
 from ingestion.twitter_poller import TwitterPoller
 from processing.pipeline import NewsPipeline
@@ -20,6 +20,8 @@ async def lifespan(app: FastAPI):
     await init_pool()
     await init_schema()
     loaded_interval = await load_runtime_settings()
+    await load_proxy_setting()
+
 
     pipeline = NewsPipeline()
     await pipeline.start(worker_count=4)
