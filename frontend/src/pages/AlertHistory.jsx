@@ -157,7 +157,7 @@ function AlertHistory() {
           </p>
         </div>
       ) : (
-        <div className="alerts-grid">
+        <div className="alerts-list">
           {alerts.map((item) => {
             const parsed = parseAlertMessage(item);
             return (
