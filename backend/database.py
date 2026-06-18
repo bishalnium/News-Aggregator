@@ -480,9 +480,9 @@ async def update_fcm_preferences(token: str, push_keyword: bool, push_context: b
             SET push_keyword = $2, push_context = $3
             WHERE fcm_token = $1
             """,
-            token,
             push_keyword,
-            push_context
+            push_context,
+            token
         )
 
 
