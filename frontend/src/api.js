@@ -125,10 +125,17 @@ export function fetchChatModels() {
   return request("/chat/models");
 }
 
-export function askChat(message, modelId) {
+export function askChat(message, modelId, timeframeMode = "dynamic", startTime = null, endTime = null, enableSearch = true) {
   return request("/chat", {
     method: "POST",
-    body: JSON.stringify({ message, model_id: modelId }),
+    body: JSON.stringify({
+      message,
+      model_id: modelId,
+      timeframe_mode: timeframeMode,
+      start_time: startTime,
+      end_time: endTime,
+      enable_search: enableSearch
+    }),
   });
 }
 

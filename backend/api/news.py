@@ -33,9 +33,10 @@ async def list_news(
         index += 1
 
     if search:
-        where.append(f"(raw_text ILIKE ${index} OR summary ILIKE ${index})")
+        where.append(f"(raw_text ILIKE ${index} OR summary ILIKE ${index + 1})")
         params.append(f"%{search}%")
-        index += 1
+        params.append(f"%{search}%")
+        index += 2
 
     sql = """
     SELECT id, source, source_channel, raw_text, url, summary, category,

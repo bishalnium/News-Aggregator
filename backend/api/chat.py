@@ -9,7 +9,7 @@ from fastapi import APIRouter
 from config import chat_model_options, resolve_chat_model
 from database import get_pool
 from models import ChatModelOption, ChatRequest, ChatResponse
-from processing.llm_classifier import answer_with_news_context
+from processing.llm_classifier import answer_with_news_context, extract_search_keywords
 
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -218,26 +218,115 @@ async def ask_chat(payload: ChatRequest) -> ChatResponse:
             model_label=selected_model["label"],
         )
 
-    from_time, to_time, window_label = _detect_window_scope(payload.message)
-    is_broad_window = (to_time - from_time) >= timedelta(days=21)
+    # 1. Parse timeframe scope
+    from_time = None
+    to_time = None
+    window_label = "all time"
+    
+    if payload.timeframe_mode == "custom" and payload.start_time and payload.end_time:
+        try:
+            # Parse datetime-local formats, e.g. "2026-06-18T12:00"
+            from_time = datetime.fromisoformat(payload.start_time.replace("Z", "+00:00"))
+            if from_time.tzinfo is None:
+                from_time = from_time.replace(tzinfo=timezone.utc)
+            else:
+                from_time = from_time.astimezone(timezone.utc)
+                
+            to_time = datetime.fromisoformat(payload.end_time.replace("Z", "+00:00"))
+            if to_time.tzinfo is None:
+                to_time = to_time.replace(tzinfo=timezone.utc)
+            else:
+                to_time = to_time.astimezone(timezone.utc)
+                
+            window_label = f"from {from_time.strftime('%Y-%m-%d %H:%M')} to {to_time.strftime('%Y-%m-%d %H:%M')} (UTC)"
+        except Exception:
+            # Fallback on parse error
+            from_time, to_time, window_label = _detect_window_scope(payload.message)
+    elif payload.timeframe_mode == "all":
+        from_time = None
+        to_time = None
+        window_label = "all time"
+    else:  # "dynamic"
+        from_time, to_time, window_label = _detect_window_scope(payload.message)
+
+    is_broad_window = (from_time is None or to_time is None) or ((to_time - from_time) >= timedelta(days=21))
     context_limit = 1600 if is_broad_window else 900
 
+    # 2. Extract search keywords if enabled
+    keywords = []
+    if payload.enable_search:
+        keywords = await extract_search_keywords(payload.message)
+
     pool = get_pool()
+    records = []
+    
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
+        # Build dynamic query
+        where_clauses = []
+        params = []
+        placeholder_idx = 1
+        
+        if from_time is not None:
+            where_clauses.append(f"fetched_at >= ${placeholder_idx}")
+            params.append(from_time)
+            placeholder_idx += 1
+        if to_time is not None:
+            where_clauses.append(f"fetched_at < ${placeholder_idx}")
+            params.append(to_time)
+            placeholder_idx += 1
+            
+        if keywords:
+            kw_clauses = []
+            for kw in keywords:
+                kw_clauses.append(f"raw_text LIKE ${placeholder_idx}")
+                params.append(f"%{kw}%")
+                placeholder_idx += 1
+            where_clauses.append("(" + " OR ".join(kw_clauses) + ")")
+            
+        where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+        
+        sql = f"""
             SELECT fetched_at, source, source_channel, raw_text, summary, urgency, sentiment
             FROM news
-            WHERE fetched_at >= $1 AND fetched_at < $2
+            WHERE {where_sql}
             ORDER BY fetched_at DESC
-            LIMIT $3
-            """,
-            from_time,
-            to_time,
-            context_limit,
-        )
+            LIMIT ${placeholder_idx}
+        """
+        params.append(context_limit)
+        
+        rows = await conn.fetch(sql, *params)
+        records = [dict(row) for row in rows]
+        
+        # Fallback to timeframe-only search if keyword search returned 0 results
+        if not records and keywords:
+            print("Keyword search returned 0 records. Falling back to timeframe-only RAG.")
+            where_clauses_fb = []
+            params_fb = []
+            placeholder_idx_fb = 1
+            
+            if from_time is not None:
+                where_clauses_fb.append(f"fetched_at >= ${placeholder_idx_fb}")
+                params_fb.append(from_time)
+                placeholder_idx_fb += 1
+            if to_time is not None:
+                where_clauses_fb.append(f"fetched_at < ${placeholder_idx_fb}")
+                params_fb.append(to_time)
+                placeholder_idx_fb += 1
+                
+            where_sql_fb = " AND ".join(where_clauses_fb) if where_clauses_fb else "1=1"
+            
+            sql_fb = f"""
+                SELECT fetched_at, source, source_channel, raw_text, summary, urgency, sentiment
+                FROM news
+                WHERE {where_sql_fb}
+                ORDER BY fetched_at DESC
+                LIMIT ${placeholder_idx_fb}
+            """
+            params_fb.append(context_limit)
+            
+            rows_fb = await conn.fetch(sql_fb, *params_fb)
+            records = [dict(row) for row in rows_fb]
 
-    records = [dict(row) for row in rows]
     month_buckets, week_buckets, day_buckets = _build_time_buckets(records)
     bucket_digest = _format_bucket_digest(month_buckets, week_buckets, day_buckets)
 
@@ -247,6 +336,7 @@ async def ask_chat(payload: ChatRequest) -> ChatResponse:
         time_bucket_digest=bucket_digest,
         model_provider=selected_model["provider"],
         model_name=selected_model["model"],
+        keywords=keywords,
     )
 
     return ChatResponse(
@@ -258,4 +348,5 @@ async def ask_chat(payload: ChatRequest) -> ChatResponse:
         month_buckets=month_buckets,
         week_buckets=week_buckets,
         day_buckets=day_buckets,
+        keywords_used=keywords if keywords else None,
     )

@@ -1624,16 +1624,20 @@ async def answer_with_news_context(
     time_bucket_digest: str = "",
     model_provider: str | None = None,
     model_name: str | None = None,
+    keywords: list[str] | None = None,
 ) -> str:
     """Chat: user picks model, fallback chain if selected provider fails."""
     if not news_rows:
         return "I could not find matching news in the selected time range."
 
     context_lines = []
-    for row in news_rows[:350]:
-        context_lines.append(
-            f"[{row.get('fetched_at')}] {row.get('source')} / {row.get('source_channel')}: {row.get('raw_text')}"
-        )
+    total_chars = 0
+    for row in news_rows:
+        line = f"[{row.get('fetched_at')}] {row.get('source')} / {row.get('source_channel')}: {row.get('raw_text')}\n"
+        if total_chars + len(line) > 13000:
+            break
+        context_lines.append(line)
+        total_chars += len(line)
 
     # Check if ANY provider is available (not just the selected one)
     if not _has_llm_provider():
@@ -1651,8 +1655,9 @@ async def answer_with_news_context(
     user_prompt = (
         f"Question: {question}\n\n"
         + (f"Timeframe buckets:\n{time_bucket_digest}\n\n" if time_bucket_digest else "")
+        + (f"Search keywords matched: {', '.join(keywords)}\n\n" if keywords else "")
         + "Database context:\n"
-        + "\n".join(context_lines)
+        + "".join(context_lines)
     )
 
     try:
@@ -2115,6 +2120,102 @@ async def _create_cerebras_context_completion_async(
     return None
 
 
+def _parse_ids_json(text: str) -> list[int] | None:
+    try:
+        cleaned = re.sub(r"```json\s*", "", text)
+        cleaned = re.sub(r"```\s*", "", cleaned).strip()
+        match_ids = json.loads(cleaned)
+        if isinstance(match_ids, list):
+            return [int(x) for x in match_ids if str(x).strip().isdigit() or isinstance(x, int)]
+    except Exception:
+        pass
+    return None
+
+
+async def extract_search_keywords(question: str) -> list[str]:
+    """Uses a lightweight LLM call to extract search keywords from the query. Falls back to stopword-filtering regex if offline."""
+    system_prompt = (
+        "You are an assistant that extracts search keywords from a user question.\n"
+        "Analyze the user's question and identify the core entities, companies, organizations, events, or topics.\n"
+        "Return ONLY a comma-separated list of 1 to 4 clean search terms. Do not include quotes, preamble, or explanation.\n"
+        "Example question: 'Did the Federal Reserve raise interest rates in the FOMC meeting yesterday?' -> 'Federal Reserve, interest rates, FOMC'"
+    )
+    user_prompt = f"Question: {question}"
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
+    ]
+
+    # Try Groq Context first
+    try:
+        res = await _create_groq_context_completion_async(
+            messages,
+            max_completion_tokens=50,
+            temperature=0.0,
+            model_name=settings.groq_model
+        )
+        if res:
+            text = res["choices"][0]["message"]["content"].strip()
+            keywords = [k.strip() for k in text.split(",") if k.strip()]
+            keywords = [k for k in keywords if len(k) >= 2]
+            if keywords:
+                return keywords
+    except Exception as exc:
+        print(f"Groq keyword extraction failed: {exc}")
+
+    # Fallback 1: Cerebras context model
+    try:
+        res = await _create_cerebras_context_completion_async(
+            messages,
+            max_completion_tokens=50,
+            temperature=0.0,
+            model_name=settings.cerebras_chat_model
+        )
+        if res:
+            text = res.choices[0].message.content if hasattr(res, "choices") else res.get("choices")[0]["message"]["content"]
+            text = text.strip()
+            keywords = [k.strip() for k in text.split(",") if k.strip()]
+            keywords = [k for k in keywords if len(k) >= 2]
+            if keywords:
+                return keywords
+    except Exception as exc:
+        print(f"Cerebras keyword extraction fallback failed: {exc}")
+
+    # Fallback 2: Gemini
+    try:
+        res = await _create_gemini_completion_async(
+            messages,
+            max_completion_tokens=50,
+            temperature=0.0,
+        )
+        if res:
+            text = res.choices[0].message.content if hasattr(res, "choices") else res.get("choices")[0]["message"]["content"]
+            text = text.strip()
+            keywords = [k.strip() for k in text.split(",") if k.strip()]
+            keywords = [k for k in keywords if len(k) >= 2]
+            if keywords:
+                return keywords
+    except Exception as exc:
+        print(f"Gemini keyword extraction fallback failed: {exc}")
+
+    # Fallback 3: Local Stopword Regex matching
+    stopwords = {
+        "what", "is", "happen", "yesterday", "today", "tomorrow", "the", "a", "an", "and", "or", "but", "about",
+        "in", "on", "at", "to", "for", "with", "by", "of", "from", "up", "out", "over", "under", "again", "further",
+        "then", "once", "here", "there", "when", "where", "why", "how", "all", "any", "both", "each", "few", "more",
+        "most", "other", "some", "such", "no", "nor", "not", "only", "own", "same", "so", "than", "too", "very",
+        "can", "will", "just", "don", "should", "now", "did", "does", "do", "done", "doing", "was", "were",
+        "been", "being", "have", "has", "had", "having", "please", "tell", "me", "show", "get", "find", "search",
+        "query", "question", "news", "headlines", "latest", "recent", "about"
+    }
+    words = re.findall(r"\b[a-zA-Z0-9'-]+\b", question.lower())
+    keywords = []
+    for w in words:
+        if w not in stopwords and len(w) >= 3:
+            keywords.append(w)
+    return keywords[:4]
+
+
 async def potentials_context_alert_match(news_text: str, context_alerts: list[dict[str, Any]]) -> list[int]:
     if not context_alerts:
         return []
@@ -2144,6 +2245,7 @@ async def potentials_context_alert_match(news_text: str, context_alerts: list[di
         {"role": "user", "content": user_content}
     ]
 
+    # Try Groq Context first
     try:
         res = await _create_groq_context_completion_async(
             messages,
@@ -2153,13 +2255,43 @@ async def potentials_context_alert_match(news_text: str, context_alerts: list[di
         )
         if res:
             text = res["choices"][0]["message"]["content"]
-            cleaned = re.sub(r"```json\s*", "", text)
-            cleaned = re.sub(r"```\s*", "", cleaned).strip()
-            match_ids = json.loads(cleaned)
-            if isinstance(match_ids, list):
-                return [int(x) for x in match_ids if str(x).strip().isdigit() or isinstance(x, int)]
+            match_ids = _parse_ids_json(text)
+            if match_ids is not None:
+                return match_ids
     except Exception as exc:
-        print(f"Error in potentials_context_alert_match: {exc}")
+        print(f"Groq context filter failed: {exc}")
+
+    # Fallback 1: Cerebras context model
+    try:
+        res = await _create_cerebras_context_completion_async(
+            messages,
+            max_completion_tokens=256,
+            temperature=0.0,
+            model_name=settings.cerebras_chat_model
+        )
+        if res:
+            text = res.choices[0].message.content if hasattr(res, "choices") else res.get("choices")[0]["message"]["content"]
+            match_ids = _parse_ids_json(text)
+            if match_ids is not None:
+                return match_ids
+    except Exception as exc:
+        print(f"Cerebras context filter fallback failed: {exc}")
+
+    # Fallback 2: Gemini
+    try:
+        res = await _create_gemini_completion_async(
+            messages,
+            max_completion_tokens=256,
+            temperature=0.0,
+        )
+        if res:
+            text = res.choices[0].message.content if hasattr(res, "choices") else res.get("choices")[0]["message"]["content"]
+            match_ids = _parse_ids_json(text)
+            if match_ids is not None:
+                return match_ids
+    except Exception as exc:
+        print(f"Gemini context filter fallback failed: {exc}")
+
     return []
 
 
@@ -2182,6 +2314,7 @@ async def verify_context_alert_match(news_text: str, context_description: str) -
         {"role": "user", "content": user_content}
     ]
 
+    # Try Cerebras context model first
     try:
         res = await _create_cerebras_context_completion_async(
             messages,
@@ -2190,11 +2323,45 @@ async def verify_context_alert_match(news_text: str, context_description: str) -
             model_name=settings.cerebras_chat_model
         )
         if res:
+            text = res.choices[0].message.content if hasattr(res, "choices") else res.get("choices")[0]["message"]["content"]
+            if "YES" in text.upper():
+                return True
+            if "NO" in text.upper():
+                return False
+    except Exception as exc:
+        print(f"Cerebras verification failed: {exc}")
+
+    # Fallback 1: Groq context model
+    try:
+        res = await _create_groq_context_completion_async(
+            messages,
+            max_completion_tokens=256,
+            temperature=0.0,
+            model_name=settings.groq_model
+        )
+        if res:
             text = res["choices"][0]["message"]["content"].strip().upper()
             if "YES" in text:
                 return True
+            if "NO" in text:
+                return False
     except Exception as exc:
-        print(f"Error in verify_context_alert_match: {exc}")
+        print(f"Groq verification fallback failed: {exc}")
+
+    # Fallback 2: Gemini
+    try:
+        res = await _create_gemini_completion_async(
+            messages,
+            max_completion_tokens=256,
+            temperature=0.0,
+        )
+        if res:
+            text = res.choices[0].message.content if hasattr(res, "choices") else res.get("choices")[0]["message"]["content"]
+            if "YES" in text.upper():
+                return True
+    except Exception as exc:
+        print(f"Gemini verification fallback failed: {exc}")
+
     return False
 
 

@@ -97,6 +97,10 @@ class ChatRequest(BaseModel):
 
     message: str = Field(min_length=2, max_length=1500)
     model_id: str = "groq_gpt_oss"
+    timeframe_mode: str = "dynamic"
+    start_time: str | None = None
+    end_time: str | None = None
+    enable_search: bool = True
 
 
 class ChatModelOption(BaseModel):
@@ -114,9 +118,10 @@ class ChatResponse(BaseModel):
     window_used: str
     model_id: str
     model_label: str
-    month_buckets: dict[str, int] = Field(default_factory=dict)
-    week_buckets: dict[str, int] = Field(default_factory=dict)
-    day_buckets: dict[str, int] = Field(default_factory=dict)
+    month_buckets: dict[str, int] | None = None
+    week_buckets: dict[str, int] | None = None
+    day_buckets: dict[str, int] | None = None
+    keywords_used: list[str] | None = None
 
 
 class SummaryIntervalRequest(BaseModel):
