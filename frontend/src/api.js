@@ -183,3 +183,19 @@ export function proposeContextAlert(instruction) {
     body: JSON.stringify({ instruction }),
   });
 }
+
+export function getFcmPreferences(token) {
+  return request(`/settings/fcm-preferences?token=${encodeURIComponent(token)}`);
+}
+
+export function updateFcmPreferences(token, pushKeyword, pushContext) {
+  return request("/settings/fcm-preferences", {
+    method: "POST",
+    body: JSON.stringify({
+      fcm_token: token,
+      push_keyword: pushKeyword,
+      push_context: pushContext,
+    }),
+  });
+}
+

@@ -132,6 +132,8 @@ CREATE TABLE IF NOT EXISTS llm_api_usage (
 CREATE TABLE IF NOT EXISTS mobile_devices (
     fcm_token VARCHAR(255) PRIMARY KEY,
     device_name VARCHAR(120),
+    push_keyword BOOLEAN DEFAULT TRUE,
+    push_context BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
@@ -332,6 +334,24 @@ async def init_schema() -> None:
             if table_name:
                 existing_tables.add(table_name)
 
+        # Check and add columns push_keyword and push_context if mobile_devices exists
+        if "mobile_devices" in existing_tables:
+            for col_name in ["push_keyword", "push_context"]:
+                has_col = await conn.fetchrow(
+                    """
+                    SELECT COLUMN_NAME
+                    FROM information_schema.COLUMNS
+                    WHERE TABLE_SCHEMA = DATABASE()
+                      AND TABLE_NAME = 'mobile_devices'
+                      AND COLUMN_NAME = $1
+                    """,
+                    col_name
+                )
+                if not has_col:
+                    await conn.execute(
+                        f"ALTER TABLE mobile_devices ADD COLUMN {col_name} BOOLEAN DEFAULT TRUE"
+                    )
+
 
 async def load_runtime_settings() -> int:
     pool = get_pool()
@@ -433,6 +453,46 @@ async def get_all_fcm_tokens() -> list[str]:
     pool = get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch("SELECT fcm_token FROM mobile_devices")
+        return [row["fcm_token"] for row in rows]
+
+
+async def get_fcm_preferences(token: str) -> dict[str, Any] | None:
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT push_keyword, push_context FROM mobile_devices WHERE fcm_token = $1",
+            token
+        )
+        if row:
+            return {
+                "push_keyword": bool(row["push_keyword"]),
+                "push_context": bool(row["push_context"])
+            }
+        return None
+
+
+async def update_fcm_preferences(token: str, push_keyword: bool, push_context: bool) -> None:
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE mobile_devices
+            SET push_keyword = $2, push_context = $3
+            WHERE fcm_token = $1
+            """,
+            token,
+            push_keyword,
+            push_context
+        )
+
+
+async def get_fcm_tokens_for_alerts(alert_type: str) -> list[str]:
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        if alert_type == "context":
+            rows = await conn.fetch("SELECT fcm_token FROM mobile_devices WHERE push_context = TRUE")
+        else:
+            rows = await conn.fetch("SELECT fcm_token FROM mobile_devices WHERE push_keyword = TRUE")
         return [row["fcm_token"] for row in rows]
 
 

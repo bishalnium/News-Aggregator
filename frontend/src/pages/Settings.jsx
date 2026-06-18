@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getProxyStatus, toggleProxy, sendTestAlert } from "../api";
+import { getProxyStatus, toggleProxy, sendTestAlert, getFcmPreferences, updateFcmPreferences } from "../api";
 
 function Settings() {
   const [proxyStatus, setProxyStatus] = useState(null);
@@ -9,8 +9,34 @@ function Settings() {
   const [testingKeyword, setTestingKeyword] = useState(false);
   const [testingContext, setTestingContext] = useState(false);
 
+  // Mobile push preferences states
+  const [fcmToken, setFcmToken] = useState(null);
+  const [pushKeyword, setPushKeyword] = useState(true);
+  const [pushContext, setPushContext] = useState(true);
+  const [loadingPrefs, setLoadingPrefs] = useState(false);
+
   useEffect(() => {
     fetchProxyStatus();
+
+    // Check if we are running in the Android App wrapper with Javascript interface
+    if (window.AndroidInterface && typeof window.AndroidInterface.getFcmToken === "function") {
+      const token = window.AndroidInterface.getFcmToken();
+      if (token) {
+        setFcmToken(token);
+        fetchFcmPreferences(token);
+      } else {
+        // Retry in case token is still loading async
+        const interval = setInterval(() => {
+          const t = window.AndroidInterface.getFcmToken();
+          if (t) {
+            setFcmToken(t);
+            fetchFcmPreferences(t);
+            clearInterval(interval);
+          }
+        }, 1000);
+        return () => clearInterval(interval);
+      }
+    }
   }, []);
 
   async function fetchProxyStatus() {
@@ -22,6 +48,41 @@ function Settings() {
       showStatus(err.message || "Failed to load proxy status", true);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function fetchFcmPreferences(token) {
+    try {
+      setLoadingPrefs(true);
+      const prefs = await getFcmPreferences(token);
+      if (prefs) {
+        setPushKeyword(prefs.push_keyword);
+        setPushContext(prefs.push_context);
+      }
+    } catch (err) {
+      console.error("Failed to load FCM preferences", err);
+    } finally {
+      setLoadingPrefs(false);
+    }
+  }
+
+  async function handleToggleFcm(type) {
+    if (!fcmToken) return;
+    const nextKeyword = type === "keyword" ? !pushKeyword : pushKeyword;
+    const nextContext = type === "context" ? !pushContext : pushContext;
+    
+    // Optimistic UI update
+    if (type === "keyword") setPushKeyword(nextKeyword);
+    else setPushContext(nextContext);
+
+    try {
+      await updateFcmPreferences(fcmToken, nextKeyword, nextContext);
+      showStatus("Notification settings updated.");
+    } catch (err) {
+      // Revert state on error
+      if (type === "keyword") setPushKeyword(!nextKeyword);
+      else setPushContext(!nextContext);
+      showStatus("Failed to update notification settings.", true);
     }
   }
 
@@ -157,6 +218,56 @@ function Settings() {
             </div>
           )}
         </section>
+
+        {fcmToken && (
+          <section className="panel" style={{ maxWidth: "650px" }}>
+            <h3>Mobile Notification Preferences</h3>
+            <p className="muted" style={{ marginBottom: "16px" }}>
+              Configure which alerts trigger push notifications on this device.
+            </p>
+            {loadingPrefs ? (
+              <div className="muted" style={{ fontSize: "0.9rem" }}>Loading preferences...</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div>
+                    <h4 style={{ margin: 0, fontSize: "0.95rem" }}>Keyword Alerts</h4>
+                    <p className="muted" style={{ margin: "4px 0 0 0", fontSize: "0.82rem" }}>
+                      Receive notifications when critical keywords are found in headlines.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleToggleFcm("keyword")}
+                    className={`toggle-switch ${pushKeyword ? "on" : "off"}`}
+                    aria-label="Toggle Keyword Push Notifications"
+                  >
+                    <span className="toggle-slider"></span>
+                    <span className="toggle-label">{pushKeyword ? "ON" : "OFF"}</span>
+                  </button>
+                </div>
+
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "1px solid var(--line)", paddingTop: "16px" }}>
+                  <div>
+                    <h4 style={{ margin: 0, fontSize: "0.95rem" }}>Context / Situation Alerts</h4>
+                    <p className="muted" style={{ margin: "4px 0 0 0", fontSize: "0.82rem" }}>
+                      Receive alerts when complex contextual intelligence or risk patterns are identified.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleToggleFcm("context")}
+                    className={`toggle-switch ${pushContext ? "on" : "off"}`}
+                    aria-label="Toggle Context Push Notifications"
+                  >
+                    <span className="toggle-slider"></span>
+                    <span className="toggle-label">{pushContext ? "ON" : "OFF"}</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </section>
+        )}
 
         <section className="panel" style={{ maxWidth: "650px" }}>
           <h3>Connectivity Diagnostics</h3>

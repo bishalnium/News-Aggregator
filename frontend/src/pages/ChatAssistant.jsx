@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { askChat, fetchChatModels } from "../api";
 
@@ -13,6 +13,15 @@ function ChatAssistant() {
   const [loading, setLoading] = useState(false);
   const [models, setModels] = useState(FALLBACK_MODELS);
   const [selectedModelId, setSelectedModelId] = useState("groq_gpt_oss");
+
+  const chatStreamRef = useRef(null);
+
+  // Auto-scroll to bottom of the chat stream
+  useEffect(() => {
+    if (chatStreamRef.current) {
+      chatStreamRef.current.scrollTop = chatStreamRef.current.scrollHeight;
+    }
+  }, [messages, loading]);
 
   useEffect(() => {
     let cancelled = false;
@@ -109,7 +118,7 @@ function ChatAssistant() {
       </header>
 
       <section className="panel chat-panel">
-        <div className="chat-stream">
+        <div className="chat-stream" ref={chatStreamRef}>
           {messages.length === 0 && (
             <p className="muted">No messages yet. Ask your first question.</p>
           )}
@@ -127,7 +136,7 @@ function ChatAssistant() {
 
         <form onSubmit={handleSubmit} className="chat-input-wrap">
           <textarea
-            rows={3}
+            rows={2}
             value={question}
             onChange={(event) => setQuestion(event.target.value)}
             placeholder="Example: what happened in the Russia Ukraine conflict in the last 2 months?"

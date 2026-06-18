@@ -184,3 +184,9 @@ class FcmRegisterRequest(BaseModel):
     device_name: str | None = None
 
 
+class FcmPreferencesRequest(BaseModel):
+    fcm_token: str
+    push_keyword: bool
+    push_context: bool
+
+

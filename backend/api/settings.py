@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from bot.telegram_notifier import send_alert_message, send_context_alert_message
 from config import ALLOWED_SUMMARY_INTERVALS, runtime_state, settings
-from database import get_pool, save_summary_interval, save_proxy_setting, save_fcm_token
+from database import get_pool, save_summary_interval, save_proxy_setting, save_fcm_token, get_fcm_preferences, update_fcm_preferences
 from models import (
     LlmUsageItem,
     SummaryBatch,
@@ -16,6 +16,7 @@ from models import (
     ProxyToggleRequest,
     BypassVerifyRequest,
     FcmRegisterRequest,
+    FcmPreferencesRequest,
 )
 
 
@@ -207,6 +208,37 @@ async def register_fcm_token(payload: FcmRegisterRequest) -> dict:
         raise HTTPException(
             status_code=500,
             detail=f"Failed to register FCM token: {str(e)}"
+        )
+
+
+@router.get("/fcm-preferences")
+async def get_fcm_prefs(token: str = Query(...)) -> dict:
+    try:
+        prefs = await get_fcm_preferences(token)
+        if prefs is None:
+            # Token not found yet or new device, return default preferences
+            return {"push_keyword": True, "push_context": True}
+        return prefs
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch FCM preferences: {str(e)}"
+        )
+
+
+@router.post("/fcm-preferences")
+async def update_fcm_prefs(payload: FcmPreferencesRequest) -> dict:
+    try:
+        await update_fcm_preferences(
+            payload.fcm_token,
+            payload.push_keyword,
+            payload.push_context
+        )
+        return {"ok": True, "message": "FCM preferences updated successfully"}
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to update FCM preferences: {str(e)}"
         )
 
 

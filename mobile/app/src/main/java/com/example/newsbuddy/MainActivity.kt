@@ -1,5 +1,10 @@
 package com.example.newsbuddy
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.Context
+import android.media.AudioAttributes
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -20,10 +25,14 @@ import java.net.URL
 
 class MainActivity : ComponentActivity() {
     private var webView: WebView? = null
+    var fcmToken: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        // Register notification channels on startup
+        createNotificationChannels()
 
         // Request Push Notification permission for Android 13+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -37,6 +46,7 @@ class MainActivity : ComponentActivity() {
             if (task.isSuccessful) {
                 val token = task.result
                 Log.d("FCM", "Current token: $token")
+                fcmToken = token
                 registerTokenWithBackend(token)
             } else {
                 Log.w("FCM", "Fetching FCM registration token failed", task.exception)
@@ -56,6 +66,9 @@ class MainActivity : ComponentActivity() {
                             settings.javaScriptEnabled = true
                             settings.domStorageEnabled = true
                             settings.userAgentString = settings.userAgentString + " NewsBuddyAndroid"
+                            
+                            // Expose FCM token Javascript interface
+                            addJavascriptInterface(AndroidWebAppInterface(this@MainActivity), "AndroidInterface")
                             
                             webViewClient = WebViewClient()
                             webChromeClient = WebChromeClient()
@@ -110,5 +123,57 @@ class MainActivity : ComponentActivity() {
         } else {
             super.onBackPressed()
         }
+    }
+
+    private fun createNotificationChannels() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            
+            val audioAttributes = AudioAttributes.Builder()
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                .build()
+
+            // 1. Keyword Alerts Channel
+            val keywordChannelId = "keyword_alerts"
+            val keywordChannelName = "Keyword Alerts"
+            val keywordSoundUri = Uri.parse("android.resource://$packageName/raw/keyword_alert")
+            val keywordChannel = NotificationChannel(
+                keywordChannelId,
+                keywordChannelName,
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Notifications for Keyword Alerts"
+                setSound(keywordSoundUri, audioAttributes)
+                enableLights(true)
+                enableVibration(true)
+            }
+            notificationManager.createNotificationChannel(keywordChannel)
+
+            // 2. Context Alerts Channel
+            val contextChannelId = "context_alerts"
+            val contextChannelName = "Context Alerts"
+            val contextSoundUri = Uri.parse("android.resource://$packageName/raw/context_alert")
+            val contextChannel = NotificationChannel(
+                contextChannelId,
+                contextChannelName,
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Notifications for Context Alerts"
+                setSound(contextSoundUri, audioAttributes)
+                enableLights(true)
+                enableVibration(true)
+            }
+            notificationManager.createNotificationChannel(contextChannel)
+
+            Log.d("FCM", "Notification channels created on startup")
+        }
+    }
+}
+
+class AndroidWebAppInterface(private val activity: MainActivity) {
+    @android.webkit.JavascriptInterface
+    fun getFcmToken(): String {
+        return activity.fcmToken ?: ""
     }
 }

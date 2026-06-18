@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
 from bot.telegram_notifier import send_alert_message, send_context_alert_message
-from database import get_pool, get_all_fcm_tokens
+from database import get_pool, get_all_fcm_tokens, get_fcm_tokens_for_alerts
 from bot.fcm_notifier import send_push_notification
 from processing.llm_classifier import potentials_context_alert_match, verify_context_alert_match
 
@@ -133,7 +133,7 @@ def _cleanup_instant_dedup(now: datetime) -> None:
 
 async def trigger_push_alert(title: str, body: str, alert_type: str) -> None:
     try:
-        tokens = await get_all_fcm_tokens()
+        tokens = await get_fcm_tokens_for_alerts(alert_type)
         if tokens:
             asyncio.create_task(send_push_notification(tokens, title, body, alert_type))
     except Exception as e:
