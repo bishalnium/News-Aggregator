@@ -287,7 +287,7 @@ def _mark_groq_key_exhausted(exhausted_index: int, reason: str) -> None:
 
 def _is_groq_key_exhausted_error(status_code: int | None, message: str) -> bool:
     lowered = (message or "").lower()
-    if status_code in {401, 403}:
+    if status_code in {401, 403, 429}:
         return True
 
     key_exhaustion_signals = [
@@ -299,6 +299,12 @@ def _is_groq_key_exhausted_error(status_code: int | None, message: str) -> bool:
         "invalid api key",
         "deactivated",
         "revoked",
+        "rate limit",
+        "rate_limit",
+        "limit reached",
+        "tpd",
+        "rpm",
+        "rpd",
     ]
     return any(signal in lowered for signal in key_exhaustion_signals)
 
