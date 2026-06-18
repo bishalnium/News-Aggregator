@@ -26,6 +26,10 @@ Thumbs.db
 private/
 public key.txt
 aampaan----*.txt
+info from user/
+backend/data/firebase_service_account.json
+backend/data/*.json
+backend/data/*.session*
 *.png
 *.jpg
 *.jpeg
