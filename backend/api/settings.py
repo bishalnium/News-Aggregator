@@ -5,6 +5,7 @@ import asyncio
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from bot.telegram_notifier import send_alert_message, send_context_alert_message
+from bot.fcm_notifier import send_push_notification
 from config import ALLOWED_SUMMARY_INTERVALS, runtime_state, settings
 from database import get_pool, save_summary_interval, save_proxy_setting, save_fcm_token, get_fcm_preferences, update_fcm_preferences
 from models import (
@@ -239,6 +240,24 @@ async def update_fcm_prefs(payload: FcmPreferencesRequest) -> dict:
         raise HTTPException(
             status_code=500,
             detail=f"Failed to update FCM preferences: {str(e)}"
+        )
+
+
+@router.post("/test-fcm-push")
+async def test_fcm_push(token: str = Query(...), alert_type: str = Query("keyword")) -> dict:
+    try:
+        title = "Test Keyword Alert 🔔" if alert_type == "keyword" else "Test Context Alert 🧠"
+        body = (
+            "This is an on-demand test of your keyword alert visual push notifications."
+            if alert_type == "keyword"
+            else "This is an on-demand test of your context alert visual push notifications."
+        )
+        await send_push_notification([token], title, body, alert_type)
+        return {"ok": True, "message": f"Test FCM push sent successfully for {alert_type}."}
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to send test push notification: {str(e)}"
         )
 
 

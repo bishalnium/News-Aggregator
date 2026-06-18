@@ -66,12 +66,14 @@
   box-sizing: border-box;
 }
 
-body {
+html, body {
   margin: 0;
+  padding: 0;
   min-height: 100vh;
+  background-color: var(--bg-top) !important;
+  background: var(--bg-gradient) !important;
   color: var(--ink);
   font-family: "Sora", sans-serif;
-  background: var(--bg-gradient);
 }
 
 .app-shell {
@@ -1378,11 +1380,48 @@ th {
     grid-template-columns: 1fr !important;
   }
 
+  /* Layout constraints for mobile viewports to prevent screen scrolling on Chat page */
+  body:has(.chat-panel) {
+    height: 100dvh !important;
+    height: 100vh !important;
+    overflow: hidden !important;
+  }
+
+  body:has(.chat-panel) .app-shell {
+    height: 100% !important;
+    overflow: hidden !important;
+  }
+
+  body:has(.chat-panel) .app-main {
+    flex: 1 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    min-height: 0 !important;
+    padding: 12px !important;
+    overflow: hidden !important;
+  }
+
+  body:has(.chat-panel) .page {
+    flex: 1 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    min-height: 0 !important;
+    gap: 12px !important;
+  }
+
   /* Chat styles for mobile */
   .chat-panel {
-    height: calc(100dvh - 250px) !important;
-    height: calc(100vh - 250px) !important;
+    flex: 1 !important;
+    display: flex !important;
+    flex-direction: column !important;
     min-height: 0 !important;
+    height: auto !important;
+  }
+
+  .chat-stream {
+    flex: 1 !important;
+    min-height: 0 !important;
+    overflow-y: auto !important;
   }
 
   .chat-input-wrap {

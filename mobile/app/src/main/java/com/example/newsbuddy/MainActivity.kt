@@ -135,7 +135,7 @@ class MainActivity : ComponentActivity() {
                 .build()
 
             // 1. Keyword Alerts Channel
-            val keywordChannelId = "keyword_alerts"
+            val keywordChannelId = "keyword_alerts_v2"
             val keywordChannelName = "Keyword Alerts"
             val keywordSoundUri = Uri.parse("android.resource://$packageName/raw/keyword_alert")
             val keywordChannel = NotificationChannel(
@@ -151,7 +151,7 @@ class MainActivity : ComponentActivity() {
             notificationManager.createNotificationChannel(keywordChannel)
 
             // 2. Context Alerts Channel
-            val contextChannelId = "context_alerts"
+            val contextChannelId = "context_alerts_v2"
             val contextChannelName = "Context Alerts"
             val contextSoundUri = Uri.parse("android.resource://$packageName/raw/context_alert")
             val contextChannel = NotificationChannel(

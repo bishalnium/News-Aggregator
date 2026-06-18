@@ -39,7 +39,7 @@ async def send_push_notification(tokens: list[str], title: str, body: str, alert
     if not init_fcm():
         return
 
-    channel_id = "keyword_alerts" if alert_type == "keyword" else "context_alerts"
+    channel_id = "keyword_alerts_v2" if alert_type == "keyword" else "context_alerts_v2"
     sound_name = "keyword_alert" if alert_type == "keyword" else "context_alert"
     
     # We send both visual notification and custom android sound channel
@@ -52,6 +52,7 @@ async def send_push_notification(tokens: list[str], title: str, body: str, alert
             "alert_type": alert_type,
         },
         android=messaging.AndroidConfig(
+            priority="high",
             notification=messaging.AndroidNotification(
                 channel_id=channel_id,
                 sound=sound_name,

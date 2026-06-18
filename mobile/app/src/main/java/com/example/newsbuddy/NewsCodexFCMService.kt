@@ -36,7 +36,7 @@ class NewsCodexFCMService : FirebaseMessagingService() {
     private fun sendNotification(title: String, body: String, alertType: String) {
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         
-        val channelId = if (alertType == "context") "context_alerts" else "keyword_alerts"
+        val channelId = if (alertType == "context") "context_alerts_v2" else "keyword_alerts_v2"
         val channelName = if (alertType == "context") "Context Alerts" else "Keyword Alerts"
         val soundResName = if (alertType == "context") "context_alert" else "keyword_alert"
         
@@ -82,6 +82,7 @@ class NewsCodexFCMService : FirebaseMessagingService() {
             .setContentText(body)
             .setAutoCancel(true)
             .setSound(soundUri)
+            .setDefaults(NotificationCompat.DEFAULT_LIGHTS or NotificationCompat.DEFAULT_VIBRATE)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setContentIntent(pendingIntent)
 

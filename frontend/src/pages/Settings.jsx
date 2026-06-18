@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getProxyStatus, toggleProxy, sendTestAlert, getFcmPreferences, updateFcmPreferences } from "../api";
+import { getProxyStatus, toggleProxy, sendTestAlert, getFcmPreferences, updateFcmPreferences, sendTestFcmPush } from "../api";
 
 function Settings({ theme, onToggleTheme }) {
   const [proxyStatus, setProxyStatus] = useState(null);
@@ -8,6 +8,10 @@ function Settings({ theme, onToggleTheme }) {
   const [isError, setIsError] = useState(false);
   const [testingKeyword, setTestingKeyword] = useState(false);
   const [testingContext, setTestingContext] = useState(false);
+
+  // FCM test buttons states
+  const [testingFcmKeyword, setTestingFcmKeyword] = useState(false);
+  const [testingFcmContext, setTestingFcmContext] = useState(false);
 
   // Mobile push preferences states
   const [fcmToken, setFcmToken] = useState(null);
@@ -134,6 +138,27 @@ function Settings({ theme, onToggleTheme }) {
     }
   }
 
+  async function handleTestFcm(type) {
+    if (!fcmToken) return;
+    if (type === "keyword") {
+      setTestingFcmKeyword(true);
+    } else {
+      setTestingFcmContext(true);
+    }
+    try {
+      const response = await sendTestFcmPush(fcmToken, type);
+      showStatus(response.message || `Test FCM push delivered for ${type}.`);
+    } catch (err) {
+      showStatus(err.message || `Failed to send FCM test push for ${type}.`, true);
+    } finally {
+      if (type === "keyword") {
+        setTestingFcmKeyword(false);
+      } else {
+        setTestingFcmContext(false);
+      }
+    }
+  }
+
   return (
     <section className="page">
       <header className="page-header">
@@ -163,14 +188,14 @@ function Settings({ theme, onToggleTheme }) {
 
       <div style={{ display: "flex", flexDirection: "column", gap: "24px", marginTop: "16px" }}>
         <section className="panel" style={{ maxWidth: "650px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "16px" }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
               <h3 style={{ margin: 0 }}>Appearance</h3>
               <p className="muted" style={{ margin: "4px 0 0 0", fontSize: "0.88rem" }}>
                 Switch between light and dark color schemes for the NewsBuddy interface.
               </p>
             </div>
-            <div className="proxy-toggle-wrap">
+            <div className="proxy-toggle-wrap" style={{ flexShrink: 0 }}>
               <button
                 type="button"
                 onClick={onToggleTheme}
@@ -185,17 +210,17 @@ function Settings({ theme, onToggleTheme }) {
         </section>
 
         <section className="panel" style={{ maxWidth: "650px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-            <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", gap: "16px" }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
               <h3 style={{ margin: 0 }}>Telegram Proxy (SOCKS5)</h3>
               <p className="muted" style={{ margin: "4px 0 0 0", fontSize: "0.88rem" }}>
                 Reroute Telegram ingestion and notifications through a Japan SOCKS5 proxy to bypass local blocks.
               </p>
             </div>
             {loading ? (
-              <div className="muted" style={{ fontSize: "0.9rem" }}>Loading...</div>
+              <div className="muted" style={{ fontSize: "0.9rem", flexShrink: 0 }}>Loading...</div>
             ) : (
-              <div className="proxy-toggle-wrap">
+              <div className="proxy-toggle-wrap" style={{ flexShrink: 0 }}>
                 <button
                   type="button"
                   onClick={handleToggle}
@@ -251,8 +276,8 @@ function Settings({ theme, onToggleTheme }) {
               <div className="muted" style={{ fontSize: "0.9rem" }}>Loading preferences...</div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "16px" }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
                     <h4 style={{ margin: 0, fontSize: "0.95rem" }}>Keyword Alerts</h4>
                     <p className="muted" style={{ margin: "4px 0 0 0", fontSize: "0.82rem" }}>
                       Receive notifications when critical keywords are found in headlines.
@@ -263,14 +288,15 @@ function Settings({ theme, onToggleTheme }) {
                     onClick={() => handleToggleFcm("keyword")}
                     className={`toggle-switch ${pushKeyword ? "on" : "off"}`}
                     aria-label="Toggle Keyword Push Notifications"
+                    style={{ flexShrink: 0 }}
                   >
                     <span className="toggle-slider"></span>
                     <span className="toggle-label">{pushKeyword ? "ON" : "OFF"}</span>
                   </button>
                 </div>
 
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "1px solid var(--line)", paddingTop: "16px" }}>
-                  <div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "1px solid var(--line)", paddingTop: "16px", gap: "16px" }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
                     <h4 style={{ margin: 0, fontSize: "0.95rem" }}>Context / Situation Alerts</h4>
                     <p className="muted" style={{ margin: "4px 0 0 0", fontSize: "0.82rem" }}>
                       Receive alerts when complex contextual intelligence or risk patterns are identified.
@@ -281,9 +307,31 @@ function Settings({ theme, onToggleTheme }) {
                     onClick={() => handleToggleFcm("context")}
                     className={`toggle-switch ${pushContext ? "on" : "off"}`}
                     aria-label="Toggle Context Push Notifications"
+                    style={{ flexShrink: 0 }}
                   >
                     <span className="toggle-slider"></span>
                     <span className="toggle-label">{pushContext ? "ON" : "OFF"}</span>
+                  </button>
+                </div>
+
+                <div style={{ display: "flex", gap: "12px", flexWrap: "wrap", borderTop: "1px solid var(--line)", paddingTop: "16px", marginTop: "8px" }}>
+                  <button
+                    type="button"
+                    className="primary-btn"
+                    onClick={() => handleTestFcm("keyword")}
+                    disabled={testingFcmKeyword}
+                    style={{ fontSize: "0.85rem", padding: "8px 12px" }}
+                  >
+                    {testingFcmKeyword ? "Sending..." : "Test Mobile Keyword Push"}
+                  </button>
+                  <button
+                    type="button"
+                    className="primary-btn"
+                    onClick={() => handleTestFcm("context")}
+                    disabled={testingFcmContext}
+                    style={{ background: "var(--surface)", border: "1px solid var(--brand)", color: "var(--brand)", fontSize: "0.85rem", padding: "8px 12px" }}
+                  >
+                    {testingFcmContext ? "Sending..." : "Test Mobile Context Push"}
                   </button>
                 </div>
               </div>

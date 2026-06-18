@@ -199,3 +199,9 @@ export function updateFcmPreferences(token, pushKeyword, pushContext) {
   });
 }
 
+export function sendTestFcmPush(token, alertType = "keyword") {
+  return request(`/settings/test-fcm-push?token=${encodeURIComponent(token)}&alert_type=${alertType}`, {
+    method: "POST",
+  });
+}
+
