@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { getProxyStatus, toggleProxy, sendTestAlert, getFcmPreferences, updateFcmPreferences } from "../api";
 
-function Settings() {
+function Settings({ theme, onToggleTheme }) {
   const [proxyStatus, setProxyStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [statusMsg, setStatusMsg] = useState("");
@@ -162,6 +162,28 @@ function Settings() {
       )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: "24px", marginTop: "16px" }}>
+        <section className="panel" style={{ maxWidth: "650px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <h3 style={{ margin: 0 }}>Appearance</h3>
+              <p className="muted" style={{ margin: "4px 0 0 0", fontSize: "0.88rem" }}>
+                Switch between light and dark color schemes for the NewsBuddy interface.
+              </p>
+            </div>
+            <div className="proxy-toggle-wrap">
+              <button
+                type="button"
+                onClick={onToggleTheme}
+                className={`toggle-switch ${theme === "dark" ? "on" : "off"}`}
+                aria-label="Toggle Dark Mode"
+              >
+                <span className="toggle-slider"></span>
+                <span className="toggle-label">{theme === "dark" ? "DARK" : "LIGHT"}</span>
+              </button>
+            </div>
+          </div>
+        </section>
+
         <section className="panel" style={{ maxWidth: "650px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
             <div>

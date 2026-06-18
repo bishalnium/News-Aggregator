@@ -144,7 +144,7 @@ function App() {
           <Route path="/watchlist" element={<Watchlist />} />
           <Route path="/alerts" element={<AlertHistory />} />
           <Route path="/chat" element={<ChatAssistant />} />
-          <Route path="/settings" element={<Settings />} />
+          <Route path="/settings" element={<Settings theme={theme} onToggleTheme={toggleTheme} />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
