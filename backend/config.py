@@ -160,6 +160,10 @@ class Settings:
     smtp_password: str
     smtp_to: str
 
+    # CallMeBot WhatsApp settings
+    whatsapp_phone: str
+    whatsapp_apikey: str
+
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -292,6 +296,8 @@ class Settings:
             smtp_user=os.getenv("SMTP_USER", "").strip(),
             smtp_password=os.getenv("SMTP_PASSWORD", "").strip(),
             smtp_to=os.getenv("SMTP_TO", "").strip(),
+            whatsapp_phone=os.getenv("WHATSAPP_PHONE", "").strip(),
+            whatsapp_apikey=os.getenv("WHATSAPP_APIKEY", "").strip(),
         )
 
 

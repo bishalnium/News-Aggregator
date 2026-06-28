@@ -11,6 +11,7 @@ from config import settings
 from database import get_pool
 from bot.telegram_notifier import send_alert_message
 from bot.email_notifier import send_email_alert
+from bot.whatsapp_notifier import send_whatsapp_alert
 
 
 class SystemWatchdog:
@@ -287,6 +288,19 @@ class SystemWatchdog:
             await send_email_alert(email_subject, email_body)
         except Exception as exc:
             print(f"Watchdog: Failed to send email alert: {exc}")
+
+        # 4. Send WhatsApp alert via CallMeBot
+        try:
+            whatsapp_msg = (
+                "⚠️ *NEWS CODEX WATCHDOG ALERT*\n\n"
+                f"Status: *UNHEALTHY*\n"
+                f"Dead Tasks: {', '.join(dead_tasks) or 'None'}\n"
+                f"News Ingested (Last Hour): {recent_news_count}\n"
+                f"Time: {now.strftime('%Y-%m-%d %H:%M:%S UTC')}"
+            )
+            await send_whatsapp_alert(whatsapp_msg)
+        except Exception as exc:
+            print(f"Watchdog: Failed to send WhatsApp alert: {exc}")
 
         self._last_alert_sent_at = now
 
