@@ -38,6 +38,7 @@ class TelegramListener:
                 raise
             except Exception as exc:
                 print(f"Telegram listener error: {exc}")
+                await self.stop()
                 await asyncio.sleep(5)
 
     async def _run_once(self) -> None:

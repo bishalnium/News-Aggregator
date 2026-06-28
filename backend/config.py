@@ -151,6 +151,15 @@ class Settings:
     fcm_credentials_path: str
     mobile_bypass_token: str
 
+    # Watchdog & Email settings
+    watchdog_check_interval_seconds: int
+    watchdog_no_news_threshold_seconds: int
+    smtp_host: str
+    smtp_port: int
+    smtp_user: str
+    smtp_password: str
+    smtp_to: str
+
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -276,6 +285,13 @@ class Settings:
             startup_summary_interval_seconds=startup_interval,
             fcm_credentials_path=os.getenv("FCM_CREDENTIALS_PATH", "").strip(),
             mobile_bypass_token=os.getenv("MOBILE_BYPASS_TOKEN", "").strip(),
+            watchdog_check_interval_seconds=_parse_int(os.getenv("WATCHDOG_CHECK_INTERVAL_SECONDS"), 3600),
+            watchdog_no_news_threshold_seconds=_parse_int(os.getenv("WATCHDOG_NO_NEWS_THRESHOLD_SECONDS"), 3600),
+            smtp_host=os.getenv("SMTP_HOST", "").strip(),
+            smtp_port=_parse_int(os.getenv("SMTP_PORT"), 587),
+            smtp_user=os.getenv("SMTP_USER", "").strip(),
+            smtp_password=os.getenv("SMTP_PASSWORD", "").strip(),
+            smtp_to=os.getenv("SMTP_TO", "").strip(),
         )
 
 

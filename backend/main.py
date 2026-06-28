@@ -13,6 +13,7 @@ from ingestion.telegram_listener import TelegramListener
 from ingestion.twitter_poller import TwitterPoller
 from processing.pipeline import NewsPipeline
 from processing.summarizer import RollingSummarizer
+from processing.watchdog import SystemWatchdog
 
 
 @asynccontextmanager
@@ -46,6 +47,11 @@ async def lifespan(app: FastAPI):
     app.state.twitter_poller = twitter_poller
     app.state.background_tasks = [telegram_task, twitter_task]
 
+    # Initialize and start System Watchdog
+    watchdog = SystemWatchdog(app)
+    await watchdog.start()
+    app.state.watchdog = watchdog
+
     print(
         "Backend started. "
         f"Summary interval: {loaded_interval}s | "
@@ -66,6 +72,10 @@ async def lifespan(app: FastAPI):
                 pass
             except Exception as exc:
                 print(f"Background task shutdown error: {exc}")
+
+        watchdog = getattr(app.state, "watchdog", None)
+        if watchdog:
+            await watchdog.stop()
 
         await telegram_listener.stop()
         await summarizer.stop()
@@ -101,8 +111,12 @@ app.include_router(websocket.router, prefix="/api")
 
 @app.get("/health")
 async def health() -> dict:
-    return {
+    status_data = {
         "status": "ok",
         "app": settings.app_name,
         "summary_interval_seconds": runtime_state.get_summary_interval_seconds(),
     }
+    watchdog = getattr(app.state, "watchdog", None)
+    if watchdog:
+        status_data["watchdog"] = watchdog.get_health_status()
+    return status_data
