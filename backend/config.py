@@ -164,6 +164,9 @@ class Settings:
     whatsapp_phone: str
     whatsapp_apikey: str
 
+    # ntfy settings
+    ntfy_topic: str
+
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -298,6 +301,7 @@ class Settings:
             smtp_to=os.getenv("SMTP_TO", "").strip(),
             whatsapp_phone=os.getenv("WHATSAPP_PHONE", "").strip(),
             whatsapp_apikey=os.getenv("WHATSAPP_APIKEY", "").strip(),
+            ntfy_topic=os.getenv("NTFY_TOPIC", "").strip(),
         )
 
 

@@ -13,6 +13,7 @@ from config import settings
 from bot.telegram_notifier import send_alert_message
 from bot.email_notifier import send_email_alert
 from bot.whatsapp_notifier import send_whatsapp_alert
+from bot.ntfy_notifier import send_ntfy_alert
 
 
 # In-memory rate limiting for restarts and alerts
@@ -96,6 +97,22 @@ async def send_system_health_alerts(summary: str, details: str, now: datetime) -
     except Exception as exc:
         print(f"Watchdog Daemon: WhatsApp alert failed: {exc}")
 
+    # 4. ntfy.sh mobile push notification
+    try:
+        ntfy_msg = (
+            f"Status: {summary}\n"
+            f"Details: {details}\n"
+            f"Time: {now.strftime('%Y-%m-%d %H:%M:%S UTC')}"
+        )
+        await send_ntfy_alert(
+            ntfy_msg,
+            title="⚠️ NEWS CODEX DAEMON ALERT",
+            priority=4,  # High priority alert
+            tags="warning,rotating_light",
+        )
+    except Exception as exc:
+        print(f"Watchdog Daemon: ntfy alert failed: {exc}")
+
 
 async def check_health() -> None:
     """Queries the backend /health endpoint and takes recovery action if unhealthy."""
@@ -157,13 +174,9 @@ async def check_health() -> None:
         restart_backend_container()
         return
 
-    # Check for zero ingestion activity in last hour (warning only)
-    no_news_threshold = settings.watchdog_no_news_threshold_seconds
+    # Check for zero ingestion activity in last hour (log only, no false alarm alerts)
     if recent_news_count == 0:
-        summary = "Ingestion pipeline IDLE (Zero news last 60m)"
-        details = f"All background tasks are alive, but 0 news items ingested.\nThreshold: {no_news_threshold}s"
-        print(f"Watchdog Daemon: {summary}. {details}")
-        await send_system_health_alerts(summary, details, now)
+        print("Watchdog Daemon: Ingestion pipeline idle (0 news in the last hour). Background tasks are healthy.")
         return
 
     print(f"Watchdog Daemon: Backend healthy. News in last hour: {recent_news_count}. All background tasks alive.")
