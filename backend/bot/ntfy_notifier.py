@@ -17,22 +17,23 @@ async def send_ntfy_alert(
         # ntfy topic not configured
         return False
 
-    url = f"https://ntfy.sh/{topic}"
+    url = "https://ntfy.sh/"
 
-    headers = {
-        "Priority": str(priority),
+    payload = {
+        "topic": topic,
+        "message": message,
+        "priority": priority,
     }
     if title:
-        headers["Title"] = title
+        payload["title"] = title
     if tags:
-        headers["Tags"] = tags
+        payload["tags"] = [tag.strip() for tag in tags.split(",") if tag.strip()]
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.post(
                 url,
-                content=message.encode("utf-8"),
-                headers=headers,
+                json=payload,
             )
             response.raise_for_status()
             print(f"ntfy alert sent successfully to topic: {topic}")
