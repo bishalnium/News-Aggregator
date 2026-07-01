@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone, timedelta
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -10,10 +11,8 @@ from api import alerts, chat, news, settings as settings_api, topics, websocket
 from config import runtime_state, settings
 from database import close_pool, init_pool, init_schema, load_runtime_settings, load_proxy_setting
 from ingestion.telegram_listener import TelegramListener
-from ingestion.twitter_poller import TwitterPoller
 from processing.pipeline import NewsPipeline
 from processing.summarizer import RollingSummarizer
-from processing.watchdog import SystemWatchdog
 
 
 @asynccontextmanager
@@ -27,8 +26,6 @@ async def lifespan(app: FastAPI):
     from bot.fcm_notifier import init_fcm
     init_fcm()
 
-
-
     pipeline = NewsPipeline()
     await pipeline.start(worker_count=4)
 
@@ -36,27 +33,18 @@ async def lifespan(app: FastAPI):
     await summarizer.start()
 
     telegram_listener = TelegramListener(pipeline.enqueue_news)
-    twitter_poller = TwitterPoller(pipeline.enqueue_news)
 
     telegram_task = asyncio.create_task(telegram_listener.run(), name="telegram-listener")
-    twitter_task = asyncio.create_task(twitter_poller.run(), name="twitter-poller")
 
     app.state.pipeline = pipeline
     app.state.summarizer = summarizer
     app.state.telegram_listener = telegram_listener
-    app.state.twitter_poller = twitter_poller
-    app.state.background_tasks = [telegram_task, twitter_task]
-
-    # Initialize and start System Watchdog
-    watchdog = SystemWatchdog(app)
-    await watchdog.start()
-    app.state.watchdog = watchdog
+    app.state.background_tasks = [telegram_task]
 
     print(
         "Backend started. "
         f"Summary interval: {loaded_interval}s | "
-        f"Telegram channels: {settings.telegram_channels} | "
-        f"Twitter handles: {settings.twitter_handles}"
+        f"Telegram channels: {settings.telegram_channels}"
     )
 
     try:
@@ -72,10 +60,6 @@ async def lifespan(app: FastAPI):
                 pass
             except Exception as exc:
                 print(f"Background task shutdown error: {exc}")
-
-        watchdog = getattr(app.state, "watchdog", None)
-        if watchdog:
-            await watchdog.stop()
 
         await telegram_listener.stop()
         await summarizer.stop()
@@ -111,12 +95,73 @@ app.include_router(websocket.router, prefix="/api")
 
 @app.get("/health")
 async def health() -> dict:
-    status_data = {
-        "status": "ok",
+    task_statuses = {}
+
+    # 1. Check background tasks
+    telegram_listener = getattr(app.state, "telegram_listener", None)
+    if telegram_listener:
+        was_started = getattr(telegram_listener, "was_started", False)
+        is_active = getattr(telegram_listener, "is_active", False)
+        task_statuses["telegram-listener"] = {
+            "alive": is_active or not was_started,
+            "was_started": was_started,
+            "running": is_active
+        }
+
+
+    # 2. Check NewsPipeline workers
+    pipeline = getattr(app.state, "pipeline", None)
+    if pipeline and hasattr(pipeline, "_workers"):
+        for task in pipeline._workers:
+            name = task.get_name()
+            if task.done():
+                exc = task.exception() if not task.cancelled() else None
+                task_statuses[name] = {
+                    "alive": False,
+                    "cancelled": task.cancelled(),
+                    "exception": str(exc) if exc else None,
+                }
+            else:
+                task_statuses[name] = {"alive": True}
+
+    # 3. Check RollingSummarizer task
+    summarizer = getattr(app.state, "summarizer", None)
+    if summarizer and hasattr(summarizer, "_task") and summarizer._task:
+        task = summarizer._task
+        name = task.get_name()
+        if task.done():
+            exc = task.exception() if not task.cancelled() else None
+            task_statuses[name] = {
+                "alive": False,
+                "cancelled": task.cancelled(),
+                "exception": str(exc) if exc else None,
+            }
+        else:
+            task_statuses[name] = {"alive": True}
+
+    # 4. Check database news count in last hour
+    recent_news_count = 0
+    try:
+        from database import get_pool
+        pool = get_pool()
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
+        async with pool.acquire() as conn:
+            val = await conn.fetchval(
+                "SELECT COUNT(*) FROM news WHERE fetched_at >= $1",
+                cutoff
+            )
+            recent_news_count = int(val or 0)
+    except Exception as exc:
+        print(f"Health check failed to query news count: {exc}")
+
+    # Determine overall health
+    is_healthy = all(status.get("alive", False) for status in task_statuses.values())
+
+    return {
+        "status": "ok" if is_healthy else "error",
         "app": settings.app_name,
+        "is_healthy": is_healthy,
+        "tasks": task_statuses,
+        "recent_news_count": recent_news_count,
         "summary_interval_seconds": runtime_state.get_summary_interval_seconds(),
     }
-    watchdog = getattr(app.state, "watchdog", None)
-    if watchdog:
-        status_data["watchdog"] = watchdog.get_health_status()
-    return status_data

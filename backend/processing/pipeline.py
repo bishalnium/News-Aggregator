@@ -14,6 +14,14 @@ from database import get_pool
 from processing.alert_engine import check_and_trigger_alerts, instant_keyword_alert, check_context_alerts
 from processing.llm_classifier import classify_news, classify_news_heuristic
 
+_running_tasks: set[asyncio.Task] = set()
+
+def run_background_task(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _running_tasks.add(task)
+    task.add_done_callback(_running_tasks.discard)
+    return task
+
 
 class NewsPipeline:
     def __init__(self) -> None:
@@ -249,7 +257,7 @@ class NewsPipeline:
             already_alerted_topics=already_alerted,
         )
 
-        asyncio.create_task(
+        run_background_task(
             check_context_alerts(
                 news_id=int(news_row["id"]),
                 raw_text=news_row["raw_text"],

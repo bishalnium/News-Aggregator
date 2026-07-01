@@ -226,6 +226,10 @@ def _increment_groq_usage(key_index: int, now: datetime) -> None:
 
 
 def _get_active_groq_key() -> tuple[int, str] | tuple[None, None]:
+    """Round-robin key selection: each call advances to the next key.
+
+    Cycle: msg1→key0, msg2→key1, ... then wraps. Skips cooled-down keys.
+    """
     global _groq_active_key_index
 
     keys = _normalized_groq_keys()
@@ -235,22 +239,23 @@ def _get_active_groq_key() -> tuple[int, str] | tuple[None, None]:
     now = datetime.now(timezone.utc)
     _cleanup_groq_state(now)
 
-    if _groq_active_key_index >= len(keys):
-        _groq_active_key_index = 0
+    # Pick current index then ALWAYS advance for next call (true round-robin)
+    current_index = _groq_active_key_index % len(keys)
+    _groq_active_key_index = (current_index + 1) % len(keys)
 
-    # Try current key first
-    if _is_groq_key_available(_groq_active_key_index, now):
-        return _groq_active_key_index, keys[_groq_active_key_index]
+    # If the picked key is available, use it
+    if _is_groq_key_available(current_index, now):
+        return current_index, keys[current_index]
 
-    # Rotate to find available key
-    for index in range(len(keys)):
-        if _is_groq_key_available(index, now):
-            _groq_active_key_index = index
-            return index, keys[index]
+    # If not, scan forward for the nearest available key
+    for offset in range(1, len(keys)):
+        candidate = (current_index + offset) % len(keys)
+        if _is_groq_key_available(candidate, now):
+            _groq_active_key_index = (candidate + 1) % len(keys)
+            return candidate, keys[candidate]
 
-    # All keys at limit — return least recently used
-    soonest_index = _groq_active_key_index
-    return soonest_index, keys[soonest_index]
+    # All keys in cooldown — return current anyway
+    return current_index, keys[current_index]
 
 
 def _mark_groq_key_exhausted(exhausted_index: int, reason: str) -> None:
@@ -493,6 +498,10 @@ def _increment_cerebras_usage(key_index: int, now: datetime) -> None:
 
 
 def _get_active_cerebras_key() -> tuple[int, str] | tuple[None, None]:
+    """Round-robin key selection: each call advances to the next key.
+
+    Cycle: msg1→key0, msg2→key1, ... then wraps. Skips cooled-down keys.
+    """
     global _cerebras_active_key_index
 
     keys = _normalized_cerebras_keys()
@@ -502,19 +511,23 @@ def _get_active_cerebras_key() -> tuple[int, str] | tuple[None, None]:
     now = datetime.now(timezone.utc)
     _cleanup_cerebras_state(now)
 
-    if _cerebras_active_key_index >= len(keys):
-        _cerebras_active_key_index = 0
+    # Pick current index then ALWAYS advance for next call (true round-robin)
+    current_index = _cerebras_active_key_index % len(keys)
+    _cerebras_active_key_index = (current_index + 1) % len(keys)
 
-    if _is_cerebras_key_available(_cerebras_active_key_index, now):
-        return _cerebras_active_key_index, keys[_cerebras_active_key_index]
+    # If the picked key is available, use it
+    if _is_cerebras_key_available(current_index, now):
+        return current_index, keys[current_index]
 
-    for index in range(len(keys)):
-        if _is_cerebras_key_available(index, now):
-            _cerebras_active_key_index = index
-            return index, keys[index]
+    # If not, scan forward for the nearest available key
+    for offset in range(1, len(keys)):
+        candidate = (current_index + offset) % len(keys)
+        if _is_cerebras_key_available(candidate, now):
+            _cerebras_active_key_index = (candidate + 1) % len(keys)
+            return candidate, keys[candidate]
 
-    soonest_index = _cerebras_active_key_index
-    return soonest_index, keys[soonest_index]
+    # All keys in cooldown — return current anyway
+    return current_index, keys[current_index]
 
 
 def _mark_cerebras_key_exhausted(exhausted_index: int, reason: str) -> None:
@@ -1744,6 +1757,11 @@ def _increment_groq_context_usage(key_index: int, now: datetime) -> None:
 
 
 def _get_active_groq_context_key() -> tuple[int, str] | tuple[None, None]:
+    """Round-robin key selection: each call advances to the next key.
+
+    Cycle: msg1→key0, msg2→key1, ... msg6→key5, msg7→key0, ...
+    If the next key in cycle is in cooldown, skip to the nearest available one.
+    """
     global _groq_context_active_key_index
 
     keys = _normalized_groq_context_keys()
@@ -1753,19 +1771,24 @@ def _get_active_groq_context_key() -> tuple[int, str] | tuple[None, None]:
     now = datetime.now(timezone.utc)
     _cleanup_groq_context_state(now)
 
-    if _groq_context_active_key_index >= len(keys):
-        _groq_context_active_key_index = 0
+    # Pick the current index then ALWAYS advance for next call (true round-robin)
+    current_index = _groq_context_active_key_index % len(keys)
+    _groq_context_active_key_index = (current_index + 1) % len(keys)
 
-    if _is_groq_context_key_available(_groq_context_active_key_index, now):
-        return _groq_context_active_key_index, keys[_groq_context_active_key_index]
+    # If the picked key is available, use it
+    if _is_groq_context_key_available(current_index, now):
+        return current_index, keys[current_index]
 
-    for index in range(len(keys)):
-        if _is_groq_context_key_available(index, now):
-            _groq_context_active_key_index = index
-            return index, keys[index]
+    # If not, scan forward from current position for the nearest available key
+    for offset in range(1, len(keys)):
+        candidate = (current_index + offset) % len(keys)
+        if _is_groq_context_key_available(candidate, now):
+            # Also advance the pointer past this candidate for next call
+            _groq_context_active_key_index = (candidate + 1) % len(keys)
+            return candidate, keys[candidate]
 
-    soonest_index = _groq_context_active_key_index
-    return soonest_index, keys[soonest_index]
+    # All keys in cooldown — return current anyway (will likely 429 and trigger exhaustion)
+    return current_index, keys[current_index]
 
 
 def _mark_groq_context_key_exhausted(exhausted_index: int, reason: str) -> None:
@@ -1867,6 +1890,10 @@ def _increment_cerebras_context_usage(key_index: int, now: datetime) -> None:
 
 
 def _get_active_cerebras_context_key() -> tuple[int, str] | tuple[None, None]:
+    """Round-robin key selection for Cerebras context keys.
+
+    Cycle: msg1→key0, msg2→key1, ... then wraps. Skips cooled-down keys.
+    """
     global _cerebras_context_active_key_index
 
     keys = _normalized_cerebras_context_keys()
@@ -1876,19 +1903,23 @@ def _get_active_cerebras_context_key() -> tuple[int, str] | tuple[None, None]:
     now = datetime.now(timezone.utc)
     _cleanup_cerebras_context_state(now)
 
-    if _cerebras_context_active_key_index >= len(keys):
-        _cerebras_context_active_key_index = 0
+    # Pick current index then ALWAYS advance for next call (true round-robin)
+    current_index = _cerebras_context_active_key_index % len(keys)
+    _cerebras_context_active_key_index = (current_index + 1) % len(keys)
 
-    if _is_cerebras_context_key_available(_cerebras_context_active_key_index, now):
-        return _cerebras_context_active_key_index, keys[_cerebras_context_active_key_index]
+    # If the picked key is available, use it
+    if _is_cerebras_context_key_available(current_index, now):
+        return current_index, keys[current_index]
 
-    for index in range(len(keys)):
-        if _is_cerebras_context_key_available(index, now):
-            _cerebras_context_active_key_index = index
-            return index, keys[index]
+    # If not, scan forward for the nearest available key
+    for offset in range(1, len(keys)):
+        candidate = (current_index + offset) % len(keys)
+        if _is_cerebras_context_key_available(candidate, now):
+            _cerebras_context_active_key_index = (candidate + 1) % len(keys)
+            return candidate, keys[candidate]
 
-    soonest_index = _cerebras_context_active_key_index
-    return soonest_index, keys[soonest_index]
+    # All keys in cooldown — return current anyway
+    return current_index, keys[current_index]
 
 
 def _mark_cerebras_context_key_exhausted(exhausted_index: int, reason: str) -> None:

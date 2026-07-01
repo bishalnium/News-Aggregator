@@ -13,6 +13,14 @@ from database import get_pool, get_all_fcm_tokens, get_fcm_tokens_for_alerts
 from bot.fcm_notifier import send_push_notification
 from processing.llm_classifier import potentials_context_alert_match, verify_context_alert_match
 
+_running_tasks: set[asyncio.Task] = set()
+
+def run_background_task(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _running_tasks.add(task)
+    task.add_done_callback(_running_tasks.discard)
+    return task
+
 
 URGENCY_RANK = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
 _SIGNAL_REPEAT_WINDOW = timedelta(minutes=45)
@@ -135,7 +143,7 @@ async def trigger_push_alert(title: str, body: str, alert_type: str) -> None:
     try:
         tokens = await get_fcm_tokens_for_alerts(alert_type)
         if tokens:
-            asyncio.create_task(send_push_notification(tokens, title, body, alert_type))
+            run_background_task(send_push_notification(tokens, title, body, alert_type))
     except Exception as e:
         print(f"FCM: Failed to trigger push alert: {e}")
 
@@ -189,14 +197,14 @@ async def instant_keyword_alert(raw_text: str, content_hash: str) -> list[str]:
             delivered = await send_alert_message(message, parse_mode="HTML")
             if delivered:
                 # Log to alert_log (fire-and-forget, don't block)
-                asyncio.create_task(
+                run_background_task(
                     _log_instant_alert(topic_id, content_hash, message)
                 )
                 # Send FCM push notification (fire-and-forget, don't block)
                 push_body = f"Keywords: {', '.join(hits[:6])}\n{raw_text[:150]}"
                 if len(raw_text) > 150:
                     push_body += "..."
-                asyncio.create_task(
+                run_background_task(
                     trigger_push_alert(
                         title=f"⚡ Instant Alert: {topic['topic_name']}",
                         body=push_body,
@@ -421,7 +429,7 @@ async def check_and_trigger_alerts(
                 push_body = f"Reason: {'; '.join(signal_reason_parts)}\n{summary or raw_text}"
                 if len(push_body) > 150:
                     push_body = push_body[:150] + "..."
-                asyncio.create_task(
+                run_background_task(
                     trigger_push_alert(
                         title=f"📡 Signal Alert ({normalized_urgency})",
                         body=push_body,
@@ -479,7 +487,7 @@ async def check_and_trigger_alerts(
                 push_body = f"Keywords: {', '.join(hits[:6])}\n{summary or raw_text}"
                 if len(push_body) > 150:
                     push_body = push_body[:150] + "..."
-                asyncio.create_task(
+                run_background_task(
                     trigger_push_alert(
                         title=f"🎯 Topic Alert: {topic_name}",
                         body=push_body,
@@ -587,7 +595,7 @@ async def check_context_alerts(news_id: int, raw_text: str, summary: str | None)
                     push_body = f"Alert: {short_desc}\n{summary or raw_text}"
                     if len(push_body) > 150:
                         push_body = push_body[:150] + "..."
-                    asyncio.create_task(
+                    run_background_task(
                         trigger_push_alert(
                             title="🎯 Situation Alert",
                             body=push_body,

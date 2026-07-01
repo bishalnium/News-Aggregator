@@ -36,6 +36,22 @@ services:
     volumes:
       - backend_data:/app/data
 
+  watchdog:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: newscodex-watchdog
+    restart: unless-stopped
+    env_file:
+      - backend/.env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - backend_data:/app/data
+    command: python processing/watchdog_daemon.py
+    depends_on:
+      backend:
+        condition: service_started
+
 volumes:
   mysql_data:
   backend_data:

@@ -20,6 +20,8 @@ class TelegramListener:
         session_dir.mkdir(parents=True, exist_ok=True)
         self._session_file = session_dir / "news_aggregator_session"
         self._bootstrap_limit = 25
+        self.is_active = False
+        self.was_started = False
 
     async def run(self) -> None:
         if not settings.telegram_api_id or not settings.telegram_api_hash:
@@ -57,6 +59,8 @@ class TelegramListener:
         self._client = TelegramClient(**client_kwargs)
 
         await self._client.start(phone=settings.telegram_phone or None)
+        self.was_started = True
+        self.is_active = True
 
         channels = settings.telegram_channels
         resolved_chats = await self._resolve_chats(channels)
@@ -143,6 +147,7 @@ class TelegramListener:
         )
 
     async def stop(self) -> None:
+        self.is_active = False
         if self._client is not None:
             await self._client.disconnect()
             self._client = None
