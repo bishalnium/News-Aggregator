@@ -41,6 +41,21 @@ async def run_test():
     else:
         print("❌ WhatsApp failed to send. Check if WHATSAPP_PHONE and WHATSAPP_APIKEY are configured.")
 
+    # 3. Test ntfy.sh
+    print("\n[3/3] Testing ntfy.sh Push Notification...")
+    from bot.ntfy_notifier import send_ntfy_alert
+    ntfy_msg = "🧪 News Codex Alert Test: If you receive this notification, ntfy.sh push alerts are working!"
+    ntfy_sent = await send_ntfy_alert(
+        ntfy_msg,
+        title="🧪 Test Alert",
+        priority=3,
+        tags="test,test_tube",
+    )
+    if ntfy_sent:
+        print("✅ ntfy.sh push notification sent successfully!")
+    else:
+        print("❌ ntfy.sh failed to send. Check if NTFY_TOPIC is configured in .env.")
+
 
 if __name__ == "__main__":
     asyncio.run(run_test())
